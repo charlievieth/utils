@@ -39,33 +39,26 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 }
 
 type Line struct {
-	s string
-	n int
+	S string
+	N int
 }
 
-type byCount []Line
+type byNameCount []Line
 
-func (b byCount) Len() int           { return len(b) }
-func (b byCount) Less(i, j int) bool { return b[i].n < b[j].n }
-func (b byCount) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+func (b byNameCount) Len() int      { return len(b) }
+func (b byNameCount) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
 
-type byName []Line
+func (b byNameCount) Less(i, j int) bool {
+	return b[i].N < b[j].N || (b[i].N == b[j].N && b[i].S < b[j].S)
+}
 
-func (b byName) Len() int           { return len(b) }
-func (b byName) Less(i, j int) bool { return b[i].s < b[j].s }
-func (b byName) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-
-func ReadStdin() ([]Line, error) {
-	in := Reader{
-		b:   bufio.NewReader(os.Stdin),
-		buf: make([]byte, 128),
-	}
+func ReadLines(r *Reader) ([]Line, error) {
 	m := make(map[string]int, 128)
 
 	var err error
 	for err == nil {
 		var b []byte
-		b, err = in.ReadBytes('\n')
+		b, err = r.ReadBytes('\n')
 		if b = bytes.TrimSpace(b); len(b) != 0 {
 			m[string(b)]++
 		}
@@ -76,16 +69,19 @@ func ReadStdin() ([]Line, error) {
 
 	lines := make([]Line, 0, len(m))
 	for s, n := range m {
-		lines = append(lines, Line{s: s, n: n})
+		lines = append(lines, Line{S: s, N: n})
 	}
-	sort.Sort(byName(lines))
-	sort.Stable(byCount(lines))
+	sort.Sort(byNameCount(lines))
 
 	return lines, nil
 }
 
 func main() {
-	lines, err := ReadStdin()
+	r := Reader{
+		b:   bufio.NewReader(os.Stdin),
+		buf: make([]byte, 128),
+	}
+	lines, err := ReadLines(&r)
 	if err != nil {
 		Fatal(err)
 	}
@@ -94,10 +90,10 @@ func main() {
 	b := make([]byte, 0, 128)
 	for _, l := range lines {
 		b = b[:0]
-		b = strconv.AppendInt(b, int64(l.n), 10)
+		b = strconv.AppendInt(b, int64(l.N), 10)
 		b = append(b, ':')
 		b = append(b, '\t')
-		b = append(b, l.s...)
+		b = append(b, l.S...)
 		b = append(b, '\n')
 		if _, err := w.Write(b); err != nil {
 			Fatal(err)
