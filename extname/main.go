@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -41,30 +42,57 @@ func Ext(path []byte) []byte {
 	return nil
 }
 
-func main() {
+var NullTerminate bool
+
+func parseFlags() {
+	flag.BoolVar(&NullTerminate, "0", false,
+		"Expect NUL ('\\0') characters as separators, instead of newlines")
+	flag.Parse()
+}
+
+func realMain() error {
+	parseFlags()
 	r := Reader{
 		b:   bufio.NewReaderSize(os.Stdin, 4096),
 		buf: make([]byte, 0, 128),
 	}
 	var buf []byte
 	var err error
-	for {
-		buf, err = r.ReadBytes('\n')
-		if err != nil {
-			break
+	if NullTerminate {
+		for {
+			buf, err = r.ReadBytes(0)
+			if err != nil {
+				break
+			}
+			buf[len(buf)-1] = '\n'
+			if _, err := os.Stdout.Write(Ext(buf)); err != nil {
+				return fmt.Errorf("writing: %s\n", err)
+			}
 		}
-		if _, err := os.Stdout.Write(Ext(buf)); err != nil {
-			fmt.Fprintf(os.Stderr, "writing: %s\n", err)
-			return
+	} else {
+		for {
+			buf, err = r.ReadBytes('\n')
+			if err != nil {
+				break
+			}
+			if _, err := os.Stdout.Write(Ext(buf)); err != nil {
+				return fmt.Errorf("writing: %s\n", err)
+			}
 		}
 	}
 	if err != io.EOF {
-		fmt.Fprintf(os.Stderr, "reading: %s\n", err)
-		return
+		return fmt.Errorf("reading: %s\n", err)
 	}
 	if _, err := os.Stdout.Write(Ext(buf)); err != nil {
-		fmt.Fprintf(os.Stderr, "writing: %s\n", err)
-		return
+		return fmt.Errorf("writing: %s\n", err)
+	}
+	return nil
+}
+
+func main() {
+	if err := realMain(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	return
 }
