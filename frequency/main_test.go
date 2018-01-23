@@ -44,7 +44,7 @@ func TestReadline(t *testing.T) {
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	lines, err := ReadLines(&r)
+	lines, err := ReadLines(&r, '\n', false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestReadline_Hard(t *testing.T) {
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	lines, err := ReadLines(&r)
+	lines, err := ReadLines(&r, '\n', false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,40 +68,38 @@ func TestReadline_Hard(t *testing.T) {
 	}
 }
 
-func BenchmarkReadLines_Short(b *testing.B) {
-	rd := bytes.NewReader(Dotfiles)
+func benchmarkReadLines(b *testing.B, data []byte, ignoreCase bool) {
+	rd := bytes.NewReader(data)
 	r := Reader{
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	if _, err := ReadLines(&r); err != nil {
+	if _, err := ReadLines(&r, '\n', ignoreCase); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		rd.Seek(0, 0)
-		if _, err := ReadLines(&r); err != nil {
+		if _, err := ReadLines(&r, '\n', ignoreCase); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
+func BenchmarkReadLines_Short(b *testing.B) {
+	benchmarkReadLines(b, Dotfiles, false)
+}
+
+func BenchmarkReadLines_Short_Case(b *testing.B) {
+	benchmarkReadLines(b, Dotfiles, true)
+}
+
 func BenchmarkReadLines_Long(b *testing.B) {
-	rd := bytes.NewReader(Gofiles)
-	r := Reader{
-		b:   bufio.NewReader(rd),
-		buf: make([]byte, 128),
-	}
-	if _, err := ReadLines(&r); err != nil {
-		b.Fatal(err)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		rd.Seek(0, 0)
-		if _, err := ReadLines(&r); err != nil {
-			b.Fatal(err)
-		}
-	}
+	benchmarkReadLines(b, Gofiles, false)
+}
+
+func BenchmarkReadLines_Long_Case(b *testing.B) {
+	benchmarkReadLines(b, Gofiles, true)
 }
 
 func decode(name string) ([]Line, error) {

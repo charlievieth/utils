@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -40,8 +42,21 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 
 type Line struct {
 	S string
+	L string // lower
 	N int
 }
+
+type byName []Line
+
+func (b byName) Len() int           { return len(b) }
+func (b byName) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+func (b byName) Less(i, j int) bool { return b[i].L < b[j].L }
+
+type byCount []Line
+
+func (b byCount) Len() int           { return len(b) }
+func (b byCount) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+func (b byCount) Less(i, j int) bool { return b[i].N < b[j].N }
 
 type byNameCount []Line
 
@@ -52,13 +67,13 @@ func (b byNameCount) Less(i, j int) bool {
 	return b[i].N < b[j].N || (b[i].N == b[j].N && b[i].S < b[j].S)
 }
 
-func ReadLines(r *Reader) ([]Line, error) {
+func ReadLines(r *Reader, delim byte, ignoreCase bool) ([]Line, error) {
 	m := make(map[string]int, 128)
 
 	var err error
 	for err == nil {
 		var b []byte
-		b, err = r.ReadBytes('\n')
+		b, err = r.ReadBytes(delim)
 		if b = bytes.TrimSpace(b); len(b) != 0 {
 			m[string(b)]++
 		}
@@ -68,20 +83,46 @@ func ReadLines(r *Reader) ([]Line, error) {
 	}
 
 	lines := make([]Line, 0, len(m))
-	for s, n := range m {
-		lines = append(lines, Line{S: s, N: n})
+	if ignoreCase {
+		for s, n := range m {
+			lines = append(lines, Line{S: s, L: strings.ToLower(s), N: n})
+		}
+	} else {
+		for s, n := range m {
+			lines = append(lines, Line{S: s, N: n})
+		}
 	}
-	sort.Sort(byNameCount(lines))
-
+	if ignoreCase {
+		sort.Sort(byName(lines))
+		sort.Stable(byCount(lines))
+	} else {
+		sort.Sort(byNameCount(lines))
+	}
 	return lines, nil
 }
 
+var NullTerminate bool
+var CaseInsensitive bool
+
+func parseFlags() {
+	flag.BoolVar(&NullTerminate, "0", false,
+		"Expect NUL ('\\0') characters as separators, instead of newlines")
+	flag.BoolVar(&CaseInsensitive, "case", false,
+		"Sort names case-insensitively")
+	flag.Parse()
+}
+
 func main() {
+	parseFlags()
 	r := Reader{
 		b:   bufio.NewReader(os.Stdin),
 		buf: make([]byte, 128),
 	}
-	lines, err := ReadLines(&r)
+	delim := byte('\n')
+	if NullTerminate {
+		delim = 0
+	}
+	lines, err := ReadLines(&r, delim, CaseInsensitive)
 	if err != nil {
 		Fatal(err)
 	}
