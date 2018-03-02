@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 type Reader struct {
@@ -34,41 +34,77 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 	return r.buf, err
 }
 
-var ZeroDelim bool
+func VolumeName(path []byte) []byte {
+	return path[:volumeNameLen(path)]
+}
 
-func init() {
-	flag.BoolVar(&ZeroDelim, "0", false, "Zero delim")
+func Base(path []byte) []byte {
+	if len(path) == 0 {
+		return nil
+	}
+	// Strip trailing slashes.
+	for len(path) > 0 && os.IsPathSeparator(path[len(path)-1]) {
+		path = path[0 : len(path)-1]
+	}
+	// Throw away volume name
+	path = path[len(VolumeName(path)):]
+	// Find the last element
+	i := len(path) - 1
+	for i >= 0 && !os.IsPathSeparator(path[i]) {
+		i--
+	}
+	if i >= 0 {
+		path = path[i+1:]
+	}
+	// If empty now, it had only slashes.
+	if len(path) == 0 {
+		return []byte{filepath.Separator}
+	}
+	return path
+}
+
+var ZeroDelim bool
+var ZeroTerm bool
+
+func parseFlags() {
+	flag.BoolVar(&ZeroDelim, "0", false,
+		"Expect NUL ('\\0') characters as separators, instead of newlines")
+	flag.BoolVar(&ZeroTerm, "z", false,
+		"End each output line with NUL ('\\0'), not newline")
+	flag.Parse()
 }
 
 func main() {
-	flag.Parse()
-	var delim byte
-	if !ZeroDelim {
-		delim = '\n'
+	parseFlags()
+	delim := byte('\n')
+	if ZeroDelim {
+		delim = 0
 	}
-	fmt.Println("ZeroDelim:", ZeroDelim, delim)
-}
-
-func Fatal(err interface{}) {
-	if err != nil {
-		var s string
-		if _, file, line, ok := runtime.Caller(1); ok && file != "" {
-			s = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	eol := byte('\n')
+	if ZeroTerm {
+		eol = 0
+	}
+	r := Reader{
+		b:   bufio.NewReader(os.Stdin),
+		buf: make([]byte, 128),
+	}
+	var err error
+	for err == nil {
+		var b []byte
+		b, err = r.ReadBytes(delim)
+		if len(b) <= 1 {
+			continue
 		}
-		switch err.(type) {
-		case error, string:
-			if s != "" {
-				fmt.Fprintf(os.Stderr, "Error (%s): %s\n", s, err)
-			} else {
-				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			}
-		default:
-			if s != "" {
-				fmt.Fprintf(os.Stderr, "Error (%s): %#v\n", s, err)
-			} else {
-				fmt.Fprintf(os.Stderr, "Error: %#v\n", err)
+		b[len(b)-1] = eol // replace delim with newline
+		if b = Base(b); len(b) != 0 {
+			_, e := os.Stdout.Write(b)
+			if e != nil && err == nil {
+				err = e
 			}
 		}
+	}
+	if err != nil && err != io.EOF {
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }
