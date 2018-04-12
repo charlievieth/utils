@@ -58,6 +58,12 @@ func (b byCount) Len() int           { return len(b) }
 func (b byCount) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func (b byCount) Less(i, j int) bool { return b[i].N < b[j].N }
 
+type byCountReverse []Line
+
+func (b byCountReverse) Len() int           { return len(b) }
+func (b byCountReverse) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+func (b byCountReverse) Less(i, j int) bool { return b[i].N >= b[j].N }
+
 type byNameCount []Line
 
 func (b byNameCount) Len() int      { return len(b) }
@@ -67,7 +73,7 @@ func (b byNameCount) Less(i, j int) bool {
 	return b[i].N < b[j].N || (b[i].N == b[j].N && b[i].S < b[j].S)
 }
 
-func ReadLines(r *Reader, delim byte, ignoreCase bool) ([]Line, error) {
+func ReadLines(r *Reader, delim byte, ignoreCase, reverseOrder bool) ([]Line, error) {
 	m := make(map[string]int, 128)
 
 	var err error
@@ -94,21 +100,35 @@ func ReadLines(r *Reader, delim byte, ignoreCase bool) ([]Line, error) {
 	}
 	if ignoreCase {
 		sort.Sort(byName(lines))
-		sort.Stable(byCount(lines))
+		if reverseOrder {
+			sort.Stable(byCountReverse(lines))
+		} else {
+			sort.Stable(byCount(lines))
+		}
 	} else {
-		sort.Sort(byNameCount(lines))
+		if reverseOrder {
+			sort.Sort(byName(lines))
+			sort.Stable(byCountReverse(lines))
+		} else {
+			sort.Sort(byNameCount(lines))
+		}
 	}
 	return lines, nil
 }
 
-var NullTerminate bool
-var CaseInsensitive bool
+var (
+	NullTerminate   bool
+	CaseInsensitive bool
+	ReverseOrder    bool
+)
 
 func parseFlags() {
 	flag.BoolVar(&NullTerminate, "0", false,
 		"Expect NUL ('\\0') characters as separators, instead of newlines")
 	flag.BoolVar(&CaseInsensitive, "case", false,
 		"Sort names case-insensitively")
+	flag.BoolVar(&ReverseOrder, "r", false,
+		"Reverse frequency sort order.")
 	flag.Parse()
 }
 
@@ -122,7 +142,7 @@ func main() {
 	if NullTerminate {
 		delim = 0
 	}
-	lines, err := ReadLines(&r, delim, CaseInsensitive)
+	lines, err := ReadLines(&r, delim, CaseInsensitive, ReverseOrder)
 	if err != nil {
 		Fatal(err)
 	}
