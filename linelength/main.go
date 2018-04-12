@@ -10,40 +10,33 @@ import (
 	"sync"
 )
 
-type Reader struct {
-	b   *bufio.Reader
-	buf []byte
-}
-
-func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
-	var frag []byte
+func ReadLength(b *bufio.Reader, delim byte) (int64, error) {
+	var length int64
 	var err error
-	r.buf = r.buf[:0]
 	for {
-		var e error
-		frag, e = r.b.ReadSlice(delim)
+		frag, e := b.ReadSlice(delim)
 		if e == nil { // got final fragment
+			if n := int64(len(frag)); n != 1 {
+				length += n - 1
+			}
 			break
 		}
 		if e != bufio.ErrBufferFull { // unexpected error
 			err = e
 			break
 		}
-		r.buf = append(r.buf, frag...)
+		length += int64(len(frag))
 	}
-	if len(frag) > 1 {
-		r.buf = append(r.buf, frag[:len(frag)-1]...)
-	}
-	return r.buf, err
+	return length, err
 }
 
-func ReadLines(r *Reader, delim byte) error {
+func ReadLines(b *bufio.Reader, delim byte) error {
 	out := bufio.NewWriterSize(os.Stdout, 32*1024)
 	scratch := make([]byte, 0, 64)
 	var err error
 	for {
-		b, er := r.ReadBytes(delim)
-		if n := int64(len(b)); n != 0 {
+		n, er := ReadLength(b, delim)
+		if n != 0 {
 			scratch = strconv.AppendInt(scratch[:0], n, 10)
 			_, ew := out.Write(append(scratch, '\n'))
 			if ew != nil {
@@ -74,11 +67,7 @@ func parseFlags() {
 }
 
 func parseStdin(delim byte) error {
-	r := Reader{
-		b:   bufio.NewReader(os.Stdin),
-		buf: make([]byte, 128),
-	}
-	return ReadLines(&r, delim)
+	return ReadLines(bufio.NewReader(os.Stdin), delim)
 }
 
 func parseFiles(delim byte, names ...string) error {
@@ -105,11 +94,7 @@ func parseFiles(delim byte, names ...string) error {
 				return
 			}
 			defer f.Close()
-			r := Reader{
-				b:   bufio.NewReaderSize(f, 64*1024),
-				buf: make([]byte, 128),
-			}
-			if err := ReadLines(&r, delim); err != nil {
+			if err := ReadLines(bufio.NewReaderSize(f, 64*1024), delim); err != nil {
 				setErr(err)
 			}
 		}(name)
