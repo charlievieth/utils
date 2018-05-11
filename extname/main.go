@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 )
 
 type Reader struct {
@@ -45,46 +46,68 @@ func Ext(path []byte) []byte {
 var NullTerminate bool
 
 func parseFlags() {
+	const usageMsg = "Usage: %[1]s [FILENAME]\n\n" +
+		"  Prints the file extension of FILENAME.  If no FILENAME is given\n" +
+		"  %[1]s reads from standard input.\n\n"
+
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), usageMsg,
+			filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
 	flag.BoolVar(&NullTerminate, "0", false,
-		"Expect NUL ('\\0') characters as separators, instead of newlines")
+		"Expect NUL ('\\0') characters as separators, instead of newlines\n"+
+			"when reading from standard input")
 	flag.Parse()
 }
 
-func realMain() error {
-	parseFlags()
+func readStdin() error {
 	r := Reader{
-		b:   bufio.NewReaderSize(os.Stdin, 4096),
+		b:   bufio.NewReader(os.Stdin),
 		buf: make([]byte, 0, 128),
 	}
 	var buf []byte
 	var err error
+	delim := byte('\n')
 	if NullTerminate {
-		for {
-			buf, err = r.ReadBytes(0)
-			if err != nil {
-				break
-			}
-			buf[len(buf)-1] = '\n'
-			if _, err := os.Stdout.Write(Ext(buf)); err != nil {
-				return fmt.Errorf("writing: %s\n", err)
-			}
+		delim = 0
+	}
+	for {
+		buf, err = r.ReadBytes(delim)
+		if err != nil {
+			break
 		}
-	} else {
-		for {
-			buf, err = r.ReadBytes('\n')
-			if err != nil {
-				break
-			}
-			if _, err := os.Stdout.Write(Ext(buf)); err != nil {
-				return fmt.Errorf("writing: %s\n", err)
-			}
+		buf = Ext(buf)
+		if n := len(buf); n != 0 {
+			buf[n-1] = '\n'
+		} else {
+			buf = append(buf, '\n')
+		}
+		if _, err := os.Stdout.Write(buf); err != nil {
+			return fmt.Errorf("writing: %s\n", err)
 		}
 	}
 	if err != io.EOF {
 		return fmt.Errorf("reading: %s\n", err)
 	}
-	if _, err := os.Stdout.Write(Ext(buf)); err != nil {
-		return fmt.Errorf("writing: %s\n", err)
+	if n := len(buf); n != 0 {
+		if buf[n-1] != '\n' {
+			buf = append(buf, '\n')
+		}
+		if _, err := os.Stdout.Write(Ext(buf)); err != nil {
+			return fmt.Errorf("writing: %s\n", err)
+		}
+	}
+	return nil
+}
+
+func realMain() error {
+	parseFlags()
+	if flag.NArg() == 0 || flag.Arg(0) == "-" {
+		return readStdin()
+	}
+	for _, s := range flag.Args() {
+		fmt.Println(filepath.Ext(s))
 	}
 	return nil
 }
