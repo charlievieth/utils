@@ -15,18 +15,18 @@ import (
 )
 
 type Reader struct {
-	b    *bufio.Reader
-	buf  []byte
-	out  []byte
-	size int
+	b   *bufio.Reader
+	buf []byte
+	out []byte
 }
 
-func NewReader(rd io.Reader, size int) *Reader {
+const defaultSize = 32 * 1024
+
+func NewReader(rd io.Reader) *Reader {
 	return &Reader{
-		b:    bufio.NewReaderSize(rd, size),
-		buf:  make([]byte, 0, 128),
-		out:  make([]byte, 0, 128),
-		size: size,
+		b:   bufio.NewReaderSize(rd, defaultSize),
+		buf: make([]byte, 0, 128),
+		out: make([]byte, 0, 128),
 	}
 }
 
@@ -72,11 +72,7 @@ func (r *Reader) StripANSI() []byte {
 }
 
 func (r *Reader) ReadAll(wr io.Writer) error {
-	size := r.size
-	if size <= 0 {
-		size = 8196
-	}
-	out := bufio.NewWriterSize(wr, size)
+	out := bufio.NewWriterSize(wr, defaultSize)
 	var buf []byte
 	var err error
 	for {
@@ -138,7 +134,7 @@ func stripFile(name string) error {
 		return fmt.Errorf("opening file (%s): %s", name, err)
 	}
 	defer fi.Close()
-	if err := NewReader(fi, 32*1024).ReadAll(os.Stdout); err != nil {
+	if err := NewReader(fi).ReadAll(os.Stdout); err != nil {
 		return fmt.Errorf("stripping (%s): %s", name, err)
 	}
 	return nil
@@ -160,7 +156,7 @@ func stripFileInPlace(name string) error {
 		os.Remove(tempname)
 		return fmt.Errorf(format, a...)
 	}
-	if err := NewReader(fi, 32*1024).ReadAll(fo); err != nil {
+	if err := NewReader(fi).ReadAll(fo); err != nil {
 		return fmt.Errorf("stripping (%s): %s", name, err)
 	}
 	if err := fi.Close(); err != nil {
@@ -178,6 +174,14 @@ func stripFileInPlace(name string) error {
 var InPlace bool
 
 func parseFlags() {
+	const usageMsg = "Usage: %[1]s [FILENAME...]\n\n" +
+		"  Strips ANSI escape sequences from FILENAME.  If no FILENAME is given\n" +
+		"  %[1]s reads from standard input.\n\n"
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), usageMsg,
+			filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
 	flag.BoolVar(&InPlace, "i", false, "edit files in place (short hand)")
 	flag.BoolVar(&InPlace, "in-place", false, "edit files in place")
 	flag.Parse()
@@ -186,8 +190,7 @@ func parseFlags() {
 func realMain() error {
 	parseFlags()
 	if flag.NArg() == 0 {
-		// use a smaller buffer for pipes
-		return NewReader(os.Stdin, 8196).ReadAll(os.Stdout)
+		return NewReader(os.Stdin).ReadAll(os.Stdout)
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, flag.NArg())
