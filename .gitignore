@@ -56,3 +56,4 @@ writeline/writeline
 writeline/writeline.exe
 xpipe/xpipe
 xpipe/xpipe.exe
+*.test
