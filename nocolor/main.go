@@ -96,6 +96,7 @@ func (r *Reader) ReadAll(wr io.Writer) error {
 	return nil
 }
 
+// WARN: this will fail if b ends with a partial escape sequence
 func findIndex(b []byte) (int, int) {
 	// Pattern: \x1b\[[0-?]*[ -/]*[@-~]
 	const minLen = 2 // "\\[[@-~]"
@@ -118,6 +119,55 @@ func findIndex(b []byte) (int, int) {
 		return start, n + 1
 	}
 	return -1, -1
+}
+
+type FindState int
+
+const (
+	findStateNone = FindState(iota)
+	findStateParameter
+	findStateIntermediate
+	findStateFinal
+	findStateInvalid
+)
+
+func (f *FindState) Reset() { *f = findStateNone }
+
+func (f *FindState) Index(b []byte) (start int, end int) {
+	const minLen = 2 // "\\[[@-~]"
+
+	var n int
+	switch *f {
+	case findStateNone:
+		start = bytes.IndexByte(b, '\x1b')
+		if start == -1 || len(b)-start < minLen || b[start+1]-'@' > '_'-'@' {
+			return -1, -1
+		}
+		n = start + 2 // ESC + second byte [@-_]
+		*f = findStateParameter
+		fallthrough
+	case findStateParameter:
+		// parameter bytes
+		for ; n < len(b) && b[n]-'0' <= '?'-'0'; n++ {
+		}
+		*f = findStateIntermediate
+		fallthrough
+	case findStateIntermediate:
+		// intermediate bytes
+		for ; n < len(b) && b[n]-' ' <= '/'-' '; n++ {
+		}
+		*f = findStateFinal
+		fallthrough
+	case findStateFinal:
+		// final byte
+		if n < len(b) && b[n]-'@' <= '~'-'@' {
+			return start, n + 1
+		}
+		*f = findStateInvalid
+		return -1, -1
+	default:
+		panic(fmt.Sprintf("invalid FindState: %d", *f))
+	}
 }
 
 func tempFile(path string) (*os.File, error) {

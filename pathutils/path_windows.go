@@ -1,4 +1,4 @@
-package main
+package pathutils
 
 func isSlash(c uint8) bool {
 	return c == '\\' || c == '/'

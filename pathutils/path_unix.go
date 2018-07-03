@@ -1,6 +1,6 @@
 // +build !windows
 
-package main
+package pathutils
 
 func volumeNameLen(path []byte) int {
 	return 0
