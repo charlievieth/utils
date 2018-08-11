@@ -34,6 +34,9 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 		r.buf = append(r.buf, frag...)
 	}
 	r.buf = append(r.buf, frag...)
+	if len(r.buf) != 0 {
+		r.buf = r.buf[:len(r.buf)-1]
+	}
 	return r.buf, err
 }
 

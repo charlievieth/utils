@@ -2,6 +2,4 @@
 
 package pathutils
 
-func volumeNameLen(path []byte) int {
-	return 0
-}
+func volumeNameLen(_ []byte) int { return 0 }

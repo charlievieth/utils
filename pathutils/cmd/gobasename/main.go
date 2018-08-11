@@ -39,7 +39,7 @@ func processStdin(delim, eol byte, out *bufio.Writer) error {
 	for {
 		b, e := r.ReadBytes(delim)
 		if len(b) != 0 {
-			if b = pathutils.Dir(b); len(b) != 0 {
+			if b = pathutils.Base(b); len(b) != 0 {
 				if _, ew := out.Write(append(b, eol)); ew != nil {
 					if e == nil {
 						e = ew
@@ -59,7 +59,7 @@ func processStdin(delim, eol byte, out *bufio.Writer) error {
 
 func processArgs(eol byte, args []string, out *bufio.Writer) error {
 	for _, s := range args {
-		if _, err := out.WriteString(filepath.Dir(s)); err != nil {
+		if _, err := out.WriteString(filepath.Base(s)); err != nil {
 			return err
 		}
 		if err := out.WriteByte(eol); err != nil {
