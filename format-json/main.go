@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 )
 
 func formatJSON(r io.Reader) ([]byte, error) {
@@ -18,7 +19,76 @@ func formatJSON(r io.Reader) ([]byte, error) {
 	return json.MarshalIndent(v, "", "    ")
 }
 
+func formatFile(name string) error {
+	f, err := os.OpenFile(name, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	buf.Grow(int(fi.Size() + bytes.MinRead))
+
+	if _, err := buf.ReadFrom(f); err != nil {
+		return err
+	}
+	src := make([]byte, buf.Len())
+	copy(src, buf.Bytes())
+	buf.Reset()
+	if err := json.Indent(&buf, src, "", "    "); err != nil {
+		return err
+	}
+
+	if _, err := f.Seek(0, 0); err != nil {
+		return err
+	}
+	n, err := buf.WriteTo(f)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(n); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+func formatFiles(names []string) {
+	numCPU := runtime.NumCPU()
+	if n := len(names); n < numCPU {
+		numCPU = n
+	}
+	in := make(chan string, numCPU)
+
+	var wg sync.WaitGroup
+	for i := 0; i < numCPU; i++ {
+		wg.Add(1)
+		go func(in chan string, wg *sync.WaitGroup) {
+			defer wg.Done()
+			for name := range in {
+				if err := formatFile(name); err != nil {
+					fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
+				}
+			}
+		}(in, &wg)
+	}
+
+	for _, name := range names {
+		in <- name
+	}
+	close(in)
+
+	wg.Wait()
+}
+
 func main() {
+	// WARN
+	formatFiles(os.Args[1:])
+	return
+
 	var v interface{}
 	if err := json.NewDecoder(os.Stdin).Decode(v); err != nil {
 		Fatal(err)
