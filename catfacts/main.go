@@ -29,13 +29,7 @@ func NewResponse(res *gotwilio.SmsResponse, exc *gotwilio.Exception, err error) 
 }
 
 var Numbers = []string{
-	"+14109351913",
-	"+14432236735",
-	"+14104919845",
-	"+14437947591",
-	"+17032162187",
-	"+14438488756",
-	"+14436186481",
+	"REPLACE_ME",
 }
 
 func init() {
