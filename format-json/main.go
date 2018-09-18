@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -19,7 +21,7 @@ func formatJSON(r io.Reader) ([]byte, error) {
 	return json.MarshalIndent(v, "", "    ")
 }
 
-func formatFile(name string) error {
+func formatFile(name, delim string, buf *bytes.Buffer) error {
 	f, err := os.OpenFile(name, os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -30,7 +32,7 @@ func formatFile(name string) error {
 	if err != nil {
 		return err
 	}
-	var buf bytes.Buffer
+	buf.Reset()
 	buf.Grow(int(fi.Size() + bytes.MinRead))
 
 	if _, err := buf.ReadFrom(f); err != nil {
@@ -39,7 +41,7 @@ func formatFile(name string) error {
 	src := make([]byte, buf.Len())
 	copy(src, buf.Bytes())
 	buf.Reset()
-	if err := json.Indent(&buf, src, "", "    "); err != nil {
+	if err := json.Indent(buf, src, "", delim); err != nil {
 		return err
 	}
 
@@ -56,7 +58,7 @@ func formatFile(name string) error {
 	return f.Close()
 }
 
-func formatFiles(names []string) {
+func formatFiles(names []string, delim string) {
 	numCPU := runtime.NumCPU()
 	if n := len(names); n < numCPU {
 		numCPU = n
@@ -68,8 +70,9 @@ func formatFiles(names []string) {
 		wg.Add(1)
 		go func(in chan string, wg *sync.WaitGroup) {
 			defer wg.Done()
+			var buf bytes.Buffer
 			for name := range in {
-				if err := formatFile(name); err != nil {
+				if err := formatFile(name, delim, &buf); err != nil {
 					fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
 				}
 			}
@@ -84,9 +87,29 @@ func formatFiles(names []string) {
 	wg.Wait()
 }
 
+var (
+	Indent  uint
+	UseTabs bool
+)
+
+func parseFlags() {
+	const DefaultIndent = 4
+	flag.BoolVar(&UseTabs, "tabs", false, "Indent using tabs")
+	flag.BoolVar(&UseTabs, "t", false, "Indent using tabs (shorthand)")
+	flag.UintVar(&Indent, "indent", DefaultIndent, "Indent this many spaces")
+	flag.UintVar(&Indent, "n", DefaultIndent, "Indent this many spaces (shorthand)")
+	flag.Parse()
+}
+
 func main() {
-	// WARN
-	formatFiles(os.Args[1:])
+	parseFlags()
+	var delim string
+	if UseTabs {
+		delim = "\t"
+	} else {
+		delim = strings.Repeat(" ", int(Indent))
+	}
+	formatFiles(flag.Args(), delim)
 	return
 
 	var v interface{}
