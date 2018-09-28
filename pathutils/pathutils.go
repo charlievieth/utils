@@ -205,3 +205,12 @@ func Dir(path []byte) []byte {
 	}
 	return append(vol, dir...)
 }
+
+func Ext(path []byte) []byte {
+	for i := len(path) - 1; i >= 0 && !os.IsPathSeparator(path[i]); i-- {
+		if path[i] == '.' {
+			return path[i:]
+		}
+	}
+	return nil
+}
