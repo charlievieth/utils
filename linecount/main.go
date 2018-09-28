@@ -76,12 +76,16 @@ var bufPool sync.Pool
 
 func getBuf() []byte {
 	if v := bufPool.Get(); v != nil {
-		return v.([]byte)
+		b := v.([]byte)
+		for i := range b {
+			b[i] = 0
+		}
 	}
 	return make([]byte, 8*1024)
 }
 
 func isBinary(b []byte) bool {
+	// this works for Mach-O binaries - not sure about what else
 	n := 0
 	for i := 0; i < len(b) && i < 128; i++ {
 		c := b[i]
@@ -89,7 +93,7 @@ func isBinary(b []byte) bool {
 			n++
 		}
 	}
-	return n >= 32
+	return n >= 64 || n >= len(b)/2
 }
 
 var ErrBinary = errors.New("binary file")
@@ -126,8 +130,6 @@ func LineCount(filename string) (int64, error) {
 			break
 		}
 	}
-	bufPool.Put(buf)
-	f.Close()
 	return lines, err
 }
 
