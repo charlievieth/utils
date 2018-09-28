@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -15,15 +17,103 @@ import (
 	"github.com/charlievieth/pkgs/fastwalk"
 )
 
-func LineCount(filename string, buf []byte) (lines int64, err error) {
+var WellKnownFilenames = map[string]bool{
+	"Dockerfile":     true,
+	"Gemfile":        true,
+	"Makefile":       true,
+	"Podfile":        true,
+	"Rakefile":       true,
+	"CMakeLists.txt": true,
+
+	"LICENSE":      true,
+	"MANIFEST":     true,
+	"METADATA":     true,
+	"NOTICE":       true,
+	"AUTHORS":      true,
+	"CODEOWNERS":   true,
+	"CONTRIBUTORS": true,
+	"README":       true,
+	"PATENTS":      true,
+	"OWNERS":       true,
+
+	// bazel
+	"BUILD":     true,
+	"WORKSPACE": true,
+}
+
+var IgnoredExtensions = map[string]bool{
+	".bz":   true,
+	".bzip": true,
+	".exe":  true,
+	".gz":   true,
+	".gzip": true,
+	".tar":  true,
+	".tbz":  true,
+	".tgz":  true,
+	".vdi":  true,
+	".xz":   true,
+	".zip":  true,
+}
+
+func Ext(path string) string {
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	if ext == "" && WellKnownFilenames[base] {
+		ext = base
+	}
+	return ext
+}
+
+func ExecutableMode(m os.FileMode) bool {
+	const mask = 1 | 8 | 64
+	return m&mask != 0
+}
+
+// Previously 32k
+const bufSize = 8 * 1024
+
+var bufPool sync.Pool
+
+func getBuf() []byte {
+	if v := bufPool.Get(); v != nil {
+		return v.([]byte)
+	}
+	return make([]byte, 8*1024)
+}
+
+func isBinary(b []byte) bool {
+	n := 0
+	for i := 0; i < len(b) && i < 128; i++ {
+		c := b[i]
+		if c <= 0x08 || (0x0E <= c && c <= 0x1f) {
+			n++
+		}
+	}
+	return n >= 32
+}
+
+var ErrBinary = errors.New("binary file")
+
+func LineCount(filename string) (int64, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return -1, err
 	}
-	defer f.Close()
-	if buf == nil {
-		buf = make([]byte, 8*1024) // Previously 32k
+	buf := getBuf()
+	defer func() { f.Close(); bufPool.Put(buf) }()
+
+	nr, err := f.Read(buf)
+	if isBinary(buf[0:nr]) {
+		return 0, ErrBinary
 	}
+	lines := int64(bytes.Count(buf[0:nr], []byte{'\n'}))
+	if err != nil {
+		if err != io.EOF {
+			return 0, err
+		}
+		return lines, nil
+	}
+
 	for {
 		nr, er := f.Read(buf)
 		if nr > 0 {
@@ -36,26 +126,78 @@ func LineCount(filename string, buf []byte) (lines int64, err error) {
 			break
 		}
 	}
-	return
+	bufPool.Put(buf)
+	f.Close()
+	return lines, err
 }
 
 type Walker struct {
-	exts map[string]int64
-	mu   sync.Mutex
+	exts     map[string]int64
+	mu       sync.Mutex
+	seen     *SeenFiles
+	symlinks bool
 }
 
 func (w *Walker) Walk(path string, typ os.FileMode) error {
 	if typ.IsRegular() {
-		lines, err := LineCount(path, nil)
+		if ExecutableMode(typ) {
+			return nil
+		}
+		ext := Ext(path)
+		if IgnoredExtensions[ext] {
+			return nil
+		}
+		lines, err := LineCount(path)
 		if err != nil {
-			return err
+			if err != ErrBinary {
+				return err
+			}
+			return nil
 		}
 		w.mu.Lock()
-		w.exts[filepath.Ext(path)] += lines
+		w.exts[ext] += lines
 		w.mu.Unlock()
 		return nil
 	}
 	if typ == os.ModeDir {
+		base := filepath.Base(path)
+		if base == "" || base[0] == '.' || base[0] == '_' ||
+			base == "testdata" || base == "node_modules" || base == "venv" {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	return nil
+}
+
+func (w *Walker) WalkLinks(path string, typ os.FileMode) error {
+	if typ&os.ModeSymlink != 0 {
+		fi, err := os.Stat(path)
+		if err != nil {
+			// handle
+			return nil
+		}
+		typ = fi.Mode()
+	}
+	seen := w.seen.Seen(path)
+	if typ.IsRegular() {
+		if seen {
+			return nil
+		}
+		lines, err := LineCount(path)
+		if err != nil {
+			return err
+		}
+		ext := Ext(path)
+		w.mu.Lock()
+		w.exts[ext] += lines
+		w.mu.Unlock()
+		return nil
+	}
+	if typ&os.ModeDir != 0 {
+		if seen {
+			return filepath.SkipDir
+		}
 		base := filepath.Base(path)
 		if base == "" || base[0] == '.' || base[0] == '_' ||
 			base == "testdata" || base == "node_modules" {
@@ -63,6 +205,7 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 		}
 		return nil
 	}
+
 	return nil
 }
 
@@ -91,6 +234,24 @@ func (b byNameCount) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
 
 func (b byNameCount) Less(i, j int) bool {
 	return b[i].N < b[j].N || (b[i].N == b[j].N && b[i].S < b[j].S)
+}
+
+const ProgramName = "linecount"
+
+var FollowSymlinks bool
+
+func parseFlags() *flag.FlagSet {
+	set := flag.NewFlagSet(ProgramName, flag.ExitOnError)
+
+	set.BoolVar(&FollowSymlinks, "L", false, "Follow symlinks")
+
+	set.Usage = func() {
+		fmt.Fprintf(set.Output(), "%s: [OPTIONS] [PATH...]\n", set.Name())
+		flag.PrintDefaults()
+	}
+	// error handled by flag.ExitOnError
+	set.Parse(os.Args[1:])
+	return set
 }
 
 func main() {
