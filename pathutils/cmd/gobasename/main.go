@@ -58,6 +58,14 @@ func processStdin(delim, eol byte, out *bufio.Writer) error {
 }
 
 func processArgs(eol byte, args []string, out *bufio.Writer) error {
+	// special case
+	if len(args) == 1 && args[0] == "." {
+		pwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		args[0] = pwd
+	}
 	for _, s := range args {
 		if _, err := out.WriteString(filepath.Base(s)); err != nil {
 			return err
