@@ -20,30 +20,48 @@ const (
 )
 
 func (s Size) String() string {
+	// TODO: test s%SectorSize == 0 HERE and optimize
 	switch {
 	case s < kB:
-		return strconv.FormatInt(int64(s), 10)
+		return strconv.FormatInt(int64(s), 10) + "B"
 	case s < mB:
+		if s%SectorSize == 0 {
+			return strconv.FormatInt(int64(s)/kB, 10) + "k"
+		}
 		f := float64(s) / kB
 		return strconv.FormatFloat(f, 'f', 1, 64) + "K"
 	case s < gB:
+		if s%SectorSize == 0 {
+			return strconv.FormatInt(int64(s)/mB, 10) + "M"
+		}
 		f := float64(s) / mB
 		return strconv.FormatFloat(f, 'f', 1, 64) + "M"
 	default:
+		if s%SectorSize == 0 {
+			return strconv.FormatInt(int64(s)/gB, 10) + "B"
+		}
 		f := float64(s) / gB
 		return strconv.FormatFloat(f, 'f', 1, 64) + "G"
 	}
 }
 
+func (s *Size) Add(n int64) { atomic.AddInt64((*int64)(s), n) }
+
 type Walker struct {
 	Files int64
-	Size  int64
+	Size  Size
+}
+
+const SectorSize = 4096
+
+func RoundUp(x int64) int64 {
+	return ((x + SectorSize - 1) / SectorSize) * SectorSize
 }
 
 func (w *Walker) Walk(path string, fi os.FileInfo) error {
 	atomic.AddInt64(&w.Files, 1)
-	if fi != nil {
-		atomic.AddInt64(&w.Size, fi.Size())
+	if fi != nil && !fi.IsDir() {
+		w.Size.Add(RoundUp(fi.Size()))
 	}
 	return nil
 }
@@ -58,7 +76,7 @@ func errHandler(err error) {
 }
 
 func realMain(dirs []string) error {
-	wr := tabwriter.NewWriter(os.Stdout, 0, 0, 4, ' ', 0)
+	wr := tabwriter.NewWriter(os.Stdout, 0, 0, 0, ' ', tabwriter.AlignRight)
 	for _, dir := range dirs {
 		if !isDir(dir) {
 			continue
@@ -68,8 +86,7 @@ func realMain(dirs []string) error {
 			fmt.Fprintf(os.Stderr, "error: %s\n", err)
 			continue
 		}
-		fmt.Fprintf(wr, "%s:\t%s\n", Size(w.Size), dir)
-		// fmt.Printf("%s: %s\n", dir, Size(w.Size))
+		fmt.Fprintf(wr, "%s\t  %s\n", Size(w.Size), dir)
 	}
 	return wr.Flush()
 }
