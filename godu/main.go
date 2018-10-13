@@ -170,7 +170,7 @@ const (
 	PrintBytes
 )
 
-func parseFlags() uint {
+func parseFlags() ([]string, uint) {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "USAGE %s: [OPTION]... [FILE]...\n", os.Args[0])
 		flag.PrintDefaults()
@@ -198,12 +198,31 @@ func parseFlags() uint {
 		flags |= PrintBytes
 	}
 
-	return flags
+	return flag.Args(), flags
+}
+
+func readdirnames(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	names, err := f.Readdirnames(-1)
+	f.Close()
+	return names, err
 }
 
 func main() {
-	flags := parseFlags()
-	if err := walk(flag.Args(), flags); err != nil {
+	paths, flags := parseFlags()
+	if len(paths) == 1 && paths[0] == "." {
+		var err error
+		paths, err = readdirnames(".")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s\n", err)
+			os.Exit(2)
+		}
+	}
+
+	if err := walk(paths, flags); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(2)
 	}
