@@ -15,8 +15,8 @@ type Size int64
 
 const (
 	kB = 1024
-	mB = kB * kB
-	gB = mB * mB
+	mB = kB * 1024
+	gB = mB * 1024
 )
 
 func (s Size) String() string {
@@ -38,7 +38,7 @@ func (s Size) String() string {
 		return strconv.FormatFloat(f, 'f', 1, 64) + "M"
 	default:
 		if s%SectorSize == 0 {
-			return strconv.FormatInt(int64(s)/gB, 10) + "B"
+			return strconv.FormatInt(int64(s)/gB, 10) + "G"
 		}
 		f := float64(s) / gB
 		return strconv.FormatFloat(f, 'f', 1, 64) + "G"
