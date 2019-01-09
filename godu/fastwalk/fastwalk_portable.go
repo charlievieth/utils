@@ -4,11 +4,7 @@
 
 package fastwalk
 
-import (
-	"os"
-
-	"github.com/charlievieth/fs"
-)
+import "os"
 
 // readDir calls fn for each directory entry in dirName.
 // It does not descend into directories or follow symlinks.
@@ -37,7 +33,7 @@ func readDir(dirName string, fn func(dirName, entName string, fi os.FileInfo) er
 }
 
 func readDirEnts(dirname string) ([]os.FileInfo, error) {
-	f, err := fs.Open(dirname)
+	f, err := os.Open(dirname)
 	if err != nil {
 		return nil, err
 	}
