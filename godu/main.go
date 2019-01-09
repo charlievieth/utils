@@ -128,7 +128,11 @@ func walkPath(path string) (Size, error) {
 }
 
 func walk(paths []string, flags uint) error {
+	var total Size
 	var sizes []FileSize
+	if flags&SortSize != 0 {
+		sizes = make([]FileSize, 0, len(paths))
+	}
 	wr := tabwriter.NewWriter(os.Stdout, 0, 0, 0, ' ', tabwriter.AlignRight)
 	for _, path := range paths {
 		size, err := walkPath(path)
@@ -139,6 +143,7 @@ func walk(paths []string, flags uint) error {
 		if flags&PrintBytes == 0 {
 			size = Size(RoundUp(int64(size)))
 		}
+		total += size
 		if flags&SortSize != 0 {
 			sizes = append(sizes, FileSize{size, path})
 			continue
@@ -147,17 +152,21 @@ func walk(paths []string, flags uint) error {
 			return err // can't print pipe may be broken
 		}
 	}
-	if flags&SortSize == 0 {
-		return wr.Flush()
+	if flags&SortSize != 0 {
+		if flags&SortNameCase != 0 {
+			sort.Sort(filesByNameCase(sizes))
+		} else {
+			sort.Sort(filesByName(sizes))
+		}
+		sort.Stable(filesBySize(sizes))
+		for _, sz := range sizes {
+			if err := printSize(wr, sz.Name, sz.Size); err != nil {
+				return err
+			}
+		}
 	}
-	if flags&SortNameCase != 0 {
-		sort.Sort(filesByNameCase(sizes))
-	} else {
-		sort.Sort(filesByName(sizes))
-	}
-	sort.Stable(filesBySize(sizes))
-	for _, sz := range sizes {
-		if err := printSize(wr, sz.Name, sz.Size); err != nil {
+	if flags&PrintTotal != 0 {
+		if err := printSize(wr, "total", total); err != nil {
 			return err
 		}
 	}
@@ -168,6 +177,7 @@ const (
 	SortSize uint = 1 << iota
 	SortNameCase
 	PrintBytes
+	PrintTotal
 )
 
 func parseFlags() ([]string, uint) {
@@ -179,23 +189,23 @@ func parseFlags() ([]string, uint) {
 	bySize := flag.Bool("s", false, "Sort files by size")
 	bySizeCase := flag.Bool("sc", false, "Sort files by size and name case-insensitivity")
 	printBytes := flag.Bool("b", false, "Print apparent size in bytes rather than disk usage")
+	printTotal := flag.Bool("c", false, "Display a grand total")
 
 	flag.Parse()
-	if flag.NArg() == 0 {
-		flag.Usage()
-		os.Exit(1)
-	}
 
 	var flags uint
-	if bySize != nil && *bySize {
+	if *bySize {
 		flags |= SortSize
 	}
-	if bySizeCase != nil && *bySizeCase {
+	if *bySizeCase {
 		flags |= SortSize
 		flags |= SortNameCase
 	}
-	if printBytes != nil && *printBytes {
+	if *printBytes {
 		flags |= PrintBytes
+	}
+	if *printTotal {
+		flags |= PrintTotal
 	}
 
 	return flag.Args(), flags
@@ -220,6 +230,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: %s\n", err)
 			os.Exit(2)
 		}
+	}
+	if len(paths) == 0 {
+		paths = []string{"."}
 	}
 
 	if err := walk(paths, flags); err != nil {
