@@ -278,3 +278,28 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// WARN: putting this here for future reference
+func StripANSI(b []byte) []byte {
+	var out []byte
+	for {
+		start, end := findIndex(b)
+		if start == -1 {
+			break
+		}
+		if start > 0 {
+			if len(out) == 0 {
+				out = make([]byte, 0, len(b))
+			}
+			out = append(out, b[:start]...)
+		}
+		if end < len(b) {
+			b = b[end:]
+		} else {
+			b = b[len(b):]
+			break
+		}
+	}
+	out = append(out, b...)
+	return out
+}
