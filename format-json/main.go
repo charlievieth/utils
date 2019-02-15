@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 func formatJSON(r io.Reader) ([]byte, error) {
@@ -21,7 +22,9 @@ func formatJSON(r io.Reader) ([]byte, error) {
 	return json.MarshalIndent(v, "", "    ")
 }
 
-func formatFile(name, delim string, buf *bytes.Buffer) error {
+type FormatFn func(dst *bytes.Buffer, src []byte) error
+
+func formatFile(name string, buf *bytes.Buffer, fn FormatFn) error {
 	f, err := os.OpenFile(name, os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -41,7 +44,7 @@ func formatFile(name, delim string, buf *bytes.Buffer) error {
 	src := make([]byte, buf.Len())
 	copy(src, buf.Bytes())
 	buf.Reset()
-	if err := json.Indent(buf, src, "", delim); err != nil {
+	if err := fn(buf, src); err != nil {
 		return err
 	}
 
@@ -58,13 +61,14 @@ func formatFile(name, delim string, buf *bytes.Buffer) error {
 	return f.Close()
 }
 
-func formatFiles(names []string, delim string) {
+func formatFiles(names []string, fn FormatFn) error {
 	numCPU := runtime.NumCPU()
 	if n := len(names); n < numCPU {
 		numCPU = n
 	}
 	in := make(chan string, numCPU)
 
+	errCount := new(int64)
 	var wg sync.WaitGroup
 	for i := 0; i < numCPU; i++ {
 		wg.Add(1)
@@ -72,8 +76,9 @@ func formatFiles(names []string, delim string) {
 			defer wg.Done()
 			var buf bytes.Buffer
 			for name := range in {
-				if err := formatFile(name, delim, &buf); err != nil {
+				if err := formatFile(name, &buf, fn); err != nil {
 					fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
+					atomic.AddInt64(errCount, 1)
 				}
 			}
 		}(in, &wg)
@@ -85,11 +90,16 @@ func formatFiles(names []string, delim string) {
 	close(in)
 
 	wg.Wait()
+	if n := *errCount; n != 0 {
+		return fmt.Errorf("encountered %d errors", n)
+	}
+	return nil
 }
 
 var (
 	Indent  uint
 	UseTabs bool
+	Compact bool
 )
 
 func parseFlags() {
@@ -98,9 +108,11 @@ func parseFlags() {
 	flag.BoolVar(&UseTabs, "t", false, "Indent using tabs (shorthand)")
 	flag.UintVar(&Indent, "indent", DefaultIndent, "Indent this many spaces")
 	flag.UintVar(&Indent, "n", DefaultIndent, "Indent this many spaces (shorthand)")
+	flag.BoolVar(&Compact, "c", false, "Compact JSON")
 	flag.Parse()
 }
 
+// (dst *bytes.Buffer, src []byte) error
 func main() {
 	parseFlags()
 	var delim string
@@ -109,26 +121,18 @@ func main() {
 	} else {
 		delim = strings.Repeat(" ", int(Indent))
 	}
-	formatFiles(flag.Args(), delim)
-	return
-
-	var v interface{}
-	if err := json.NewDecoder(os.Stdin).Decode(v); err != nil {
-		Fatal(err)
+	var fn FormatFn
+	if Compact {
+		fn = json.Compact
+	} else {
+		fn = func(dst *bytes.Buffer, src []byte) error {
+			return json.Indent(dst, src, "", delim)
+		}
 	}
-	b, err := json.MarshalIndent(v, "", "    ")
-	if err != nil {
-		Fatal(err)
+	if err := formatFiles(flag.Args(), fn); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(1)
 	}
-	if _, err := os.Stdout.Write(b); err != nil {
-		Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(os.Stdin); err != nil {
-		Fatal(err)
-	}
-	// json.MarshalIndent(v, prefix, indent)
 }
 
 func Fatal(err interface{}) {
