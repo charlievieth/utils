@@ -139,9 +139,9 @@ func (c *ColorGamut) UnmarshalJSON(b []byte) error {
 
 func (c ColorGamut) MarshalJSON() ([]byte, error) {
 	gamut := [3][3]float32{
-		0: [3]float32{c.Red.X, c.Red.Y},
-		1: [3]float32{c.Green.X, c.Green.Y},
-		2: [3]float32{c.Blue.X, c.Blue.Y},
+		0: {c.Red.X, c.Red.Y},
+		1: {c.Green.X, c.Green.Y},
+		2: {c.Blue.X, c.Blue.Y},
 	}
 	return json.Marshal(gamut)
 }

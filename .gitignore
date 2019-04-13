@@ -58,3 +58,6 @@ writeline/writeline.exe
 xpipe/xpipe
 xpipe/xpipe.exe
 *.test
+godu/godu
+linecount/linecount
+fixpkg/fixpkg
