@@ -21,6 +21,7 @@ type SeenFiles struct {
 }
 
 func (s *SeenFiles) Seen(path string) bool {
+	// TODO (CEV): we can use syscall.Stat() directly
 	fi, err := os.Stat(path)
 	if err != nil {
 		return false
@@ -30,13 +31,11 @@ func (s *SeenFiles) Seen(path string) bool {
 		Dev: stat.Dev,
 		Ino: stat.Ino,
 	}
-	var ok bool
 	s.mu.Lock()
-	if s.keys != nil {
-		_, ok = s.keys[key]
-	} else {
+	if s.keys == nil {
 		s.keys = make(map[fileKey]struct{})
 	}
+	_, ok := s.keys[key]
 	if !ok {
 		s.keys[key] = struct{}{}
 	}

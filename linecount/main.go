@@ -120,9 +120,7 @@ func LineCount(filename string) (int64, error) {
 
 	for {
 		nr, er := f.Read(buf)
-		if nr > 0 {
-			lines += int64(bytes.Count(buf[0:nr], []byte{'\n'}))
-		}
+		lines += int64(bytes.Count(buf[0:nr], []byte{'\n'}))
 		if er != nil {
 			if er != io.EOF {
 				err = er
