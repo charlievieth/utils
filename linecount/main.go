@@ -14,6 +14,7 @@ import (
 	"sync"
 	"text/tabwriter"
 
+	"github.com/charlievieth/num"
 	"github.com/charlievieth/pkgs/fastwalk"
 )
 
@@ -255,11 +256,21 @@ func parseFlags() *flag.FlagSet {
 }
 
 func main() {
+	var UseThousandsSeparators bool
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "%s: [OPTIONS] [PATH...]\n",
+			filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
+	flag.BoolVar(&UseThousandsSeparators, "n", false,
+		"Print numbers with thousands separators.")
+	flag.Parse()
+
 	pwd, err := os.Getwd()
 	if err != nil {
 		Fatal(err)
 	}
-	args := os.Args[1:]
+	args := flag.Args()
 	if len(args) == 0 {
 		args = append(args, pwd)
 	}
@@ -296,7 +307,11 @@ func main() {
 	b := make([]byte, 0, 128)
 	for _, l := range exts {
 		b = b[:0]
-		b = strconv.AppendInt(b, l.N, 10)
+		if UseThousandsSeparators {
+			b = append(b, num.FormatInt(l.N)...)
+		} else {
+			b = strconv.AppendInt(b, l.N, 10)
+		}
 		b = append(b, ':')
 		b = append(b, '\t')
 		b = append(b, l.S...)
