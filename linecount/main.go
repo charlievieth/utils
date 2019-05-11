@@ -134,6 +134,7 @@ func LineCount(filename string) (int64, error) {
 
 type Walker struct {
 	exts     map[string]int64
+	ignore   map[string]bool
 	mu       sync.Mutex
 	seen     *SeenFiles
 	symlinks bool
@@ -164,6 +165,9 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 		base := filepath.Base(path)
 		if base == "" || base[0] == '.' || base[0] == '_' ||
 			base == "testdata" || base == "node_modules" || base == "venv" {
+			return filepath.SkipDir
+		}
+		if w.ignore != nil && w.ignore[base] {
 			return filepath.SkipDir
 		}
 		return nil
@@ -237,6 +241,23 @@ func (b byNameCount) Less(i, j int) bool {
 	return b[i].N < b[j].N || (b[i].N == b[j].N && b[i].S < b[j].S)
 }
 
+type StringSliceValue []string
+
+var _ flag.Getter = (*StringSliceValue)(nil)
+
+func (v StringSliceValue) Get() interface{} {
+	return ([]string)(v)
+}
+
+func (v *StringSliceValue) Set(s string) error {
+	*v = append(*v, s)
+	return nil
+}
+
+func (v StringSliceValue) String() string {
+	return fmt.Sprintf("%q", ([]string)(v))
+}
+
 const ProgramName = "linecount"
 
 var FollowSymlinks bool
@@ -257,6 +278,7 @@ func parseFlags() *flag.FlagSet {
 
 func main() {
 	var UseThousandsSeparators bool
+	var IgnoredNames StringSliceValue
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "%s: [OPTIONS] [PATH...]\n",
 			filepath.Base(os.Args[0]))
@@ -264,6 +286,7 @@ func main() {
 	}
 	flag.BoolVar(&UseThousandsSeparators, "n", false,
 		"Print numbers with thousands separators.")
+	flag.Var(&IgnoredNames, "x", "Ignore directories.")
 	flag.Parse()
 
 	pwd, err := os.Getwd()
@@ -278,6 +301,13 @@ func main() {
 	w := Walker{
 		exts: make(map[string]int64),
 	}
+	if len(IgnoredNames) != 0 {
+		w.ignore = make(map[string]bool, len(IgnoredNames))
+		for _, s := range IgnoredNames {
+			w.ignore[s] = true
+		}
+	}
+
 	for _, path := range args {
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(pwd, path)
