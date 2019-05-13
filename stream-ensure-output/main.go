@@ -11,9 +11,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
-var Re = regexp.MustCompile(`\\x[[:xdigit:]]{2}`)
+var (
+	escapeRe *regexp.Regexp
+	initRe   sync.Once
+)
 
 func Unescape(b []byte) []byte {
 	s := string(bytes.TrimPrefix(b, []byte("\\x")))
@@ -24,9 +28,12 @@ func Unescape(b []byte) []byte {
 }
 
 func ReplaceControlChars(src []byte) []byte {
+	initRe.Do(func() {
+		escapeRe = regexp.MustCompile(`\\x[[:xdigit:]]{2}`)
+	})
 	b := bytes.ReplaceAll(src, []byte(`\r\n`), []byte{'\n'})
 	b = bytes.ReplaceAll(b, []byte(`\t`), []byte{'\t'})
-	return Re.ReplaceAllFunc(b, Unescape)
+	return escapeRe.ReplaceAllFunc(b, Unescape)
 }
 
 func Stream(r io.Reader, w io.Writer) error {
