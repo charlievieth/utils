@@ -73,7 +73,7 @@ func TrimPathPrefix(path, prefix string) string {
 	return path
 }
 
-func ConvertReomte(url string) (string, error) {
+func ConvertRemote(url string) (string, error) {
 	if strings.HasPrefix(url, "https://github.com/") {
 		return url, nil
 	}
@@ -129,7 +129,7 @@ func realMain() error {
 		if err != nil {
 			return err
 		}
-		url, err := ConvertReomte(remote)
+		url, err := ConvertRemote(remote)
 		if err != nil {
 			return err
 		}
