@@ -128,7 +128,7 @@ func main() {
 	}
 	fmt.Fprintln(os.Stderr, "Workers:", numWorkers)
 
-	w, err := NewWalker(flag.Arg(0), flag.Arg(2))
+	w, err := NewWalker(flag.Arg(0), flag.Arg(1))
 	if err != nil {
 		Fatal(err)
 	}
