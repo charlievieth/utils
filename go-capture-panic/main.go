@@ -3,12 +3,17 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // TODO:
@@ -20,9 +25,11 @@ import (
 const (
 	panicPrefix = "panic: "
 
+	envPrefix = "GCP_"
+
 	// use '\r\n' as the default newline replacement since it
 	// is more distinctive than just '\n'
-	defaultReplacement = "\\r\\n"
+	defaultNewLineReplacement = "\\r\\n"
 
 	defaultMaxLineLength = 16 * 1014
 
@@ -33,21 +40,96 @@ const (
 )
 
 var panicBytes = []byte(panicPrefix)
+var ErrTooLong = errors.New("go-capture-panic: token too long")
+
+type Scanner struct {
+	rd        *Reader
+	panicking bool
+	trace     []byte
+	opts      Options
+}
+
+type Options struct {
+	Logger             *zap.Logger // TOOD (CEV): make configurable
+	MaxLineLength      int
+	ReaderSize         int
+	NewLineReplacement []byte
+	Namespace          string
+	SignalChild        bool // send all signals to our child process
+}
+
+func envInt(key string) int {
+	i, _ := strconv.Atoi(os.Getenv(key))
+	return i
+}
+
+func envBool(key string) bool {
+	b, _ := strconv.ParseBool(os.Getenv(key))
+	return b
+}
+
+func envBytes(key string) []byte {
+	if s := os.Getenv(key); s != "" {
+		return []byte(s)
+	}
+	return nil
+}
+
+func EnvOptions() *Options {
+	return &Options{
+		MaxLineLength:      envInt(envPrefix + "MAX_LINE_LENGTH"),
+		ReaderSize:         envInt(envPrefix + "READER_SIZE"),
+		NewLineReplacement: envBytes(envPrefix + "NEW_LINE_REPLACEMENT"),
+		Namespace:          os.Getenv(envPrefix + "NAMESPACE"),
+		SignalChild:        envBool(envPrefix + "SIGNAL_CHILD"),
+	}
+}
+
+func (o Options) Init(r io.Reader, cmd string, args ...string) *Scanner {
+	if o.MaxLineLength == 0 {
+		o.MaxLineLength = defaultMaxLineLength
+	}
+	if o.ReaderSize == 0 {
+		o.ReaderSize = defaultReaderSize
+	}
+	if len(o.NewLineReplacement) == 0 {
+		o.NewLineReplacement = []byte(defaultNewLineReplacement)
+	}
+	if o.Namespace == "" {
+		o.Namespace = filepath.Base(cmd)
+	}
+	// TOOD (CEV): make configurable
+	if o.Logger == nil {
+		// z := zap.NewProduction().Named(s)
+
+	}
+	return &Scanner{
+		rd:    NewReaderSize(r, o.ReaderSize, o.MaxLineLength),
+		trace: allocBytes(0, 128*1024),
+		opts:  o,
+	}
+}
 
 // TODO: reserve space in case we are in an OOM situation
 type Reader struct {
 	b         *bufio.Reader
 	buf       []byte // line buffer
 	trace     []byte // trace buffer
+	maxLength int    // max line length (loosely enforced)
 	panicking bool
 }
 
-func NewReader(r io.Reader) *Reader {
+func NewReaderSize(r io.Reader, size, maxLength int) *Reader {
 	return &Reader{
-		b:     bufio.NewReaderSize(r, defaultReaderSize),
-		buf:   make([]byte, 0, 256),
-		trace: make([]byte, 0, 32*1024),
+		b:         allocBufioReader(r, size),
+		buf:       make([]byte, 0, 256),
+		trace:     make([]byte, 0, 32*1024),
+		maxLength: maxLength,
 	}
+}
+
+func NewReader(r io.Reader) *Reader {
+	return NewReaderSize(r, defaultReaderSize, defaultMaxLineLength)
 }
 
 func (r *Reader) Panicking() bool { return r.panicking }
@@ -87,13 +169,48 @@ func (r *Reader) Trace() []byte {
 	if bytes.Contains(trace, []byte("\r\n")) {
 		trace = bytes.ReplaceAll(trace, []byte("\r\n"), []byte{'\n'})
 	}
-	return ReplaceNewLines(trace, []byte(defaultReplacement), nil)
+	return ReplaceNewLines(trace, []byte(defaultNewLineReplacement), nil)
+}
+
+type LogEntry struct {
+	Level     string            `json:"level"`
+	Timestamp float64           `json:"ts"`
+	Logger    string            `json:"logger"`
+	Message   string            `json:"msg"`
+	Pid       int               `json:"pid"` // ppid
+	JSON      map[string]string `json:"json,omitempty"`
+}
+
+func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
+	var frag []byte
+	var err error
+	r.buf = r.buf[:0]
+	for {
+		var e error
+		frag, e = r.b.ReadSlice(delim)
+		if e == nil { // final fragment
+			break
+		}
+		if e != bufio.ErrBufferFull { // unexpected error
+			err = e
+			break
+		}
+		// We still append frag to r.buf even though the result exceeds
+		// maxLength otherwise we would lose it.
+		if len(r.buf)+len(frag) > r.maxLength {
+			err = ErrTooLong
+			break
+		}
+		r.buf = append(r.buf, frag...)
+	}
+	r.buf = append(r.buf, frag...)
+	return r.buf, err
 }
 
 // TODO:
 // * cap line length
 // * consume all of the panic
-func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
+func (r *Reader) ReadBytesPanic(delim byte) ([]byte, error) {
 	var frag []byte
 	var err error
 	r.buf = r.buf[:0]
@@ -131,10 +248,38 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 	return r.buf, err
 }
 
+// TODO (CEV): rename
+func (s *Scanner) Scan(w io.Writer) (err error) {
+	for {
+		b, e := s.rd.ReadBytes('\n')
+		if len(b) != 0 {
+			s.panicking = s.panicking || len(b) >= len(panicPrefix) &&
+				bytes.HasPrefix(b, panicBytes)
+			if !s.panicking {
+				if _, ew := w.Write(b); ew != nil && (e == nil || e == io.EOF) {
+					e = ew
+				}
+			} else {
+				s.trace = append(s.trace, b...)
+			}
+		}
+		if e != nil {
+			if e != io.EOF {
+				err = e
+			}
+			break
+		}
+	}
+	if len(s.trace) != 0 {
+
+	}
+	return err
+}
+
 // CEV: assume stderr for now
 func (r *Reader) Copy(w io.Writer) (err error) {
 	for {
-		b, er := r.ReadBytes('\n')
+		b, er := r.ReadBytesPanic('\n')
 		if len(b) != 0 {
 			if _, ew := w.Write(b); ew != nil {
 				if er == nil {
@@ -160,9 +305,34 @@ func (r *Reader) Copy(w io.Writer) (err error) {
 	return err
 }
 
+func cleanEnv() []string {
+	env := os.Environ()
+	a := env[:0]
+	for _, s := range env {
+		if !strings.HasPrefix(s, envPrefix) {
+			a = append(a, s)
+		}
+	}
+	return a
+}
+
 func realMain(name string, args []string) error {
-	cmd := exec.Command(name, args...)
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return err // fast exit
+	}
+	opts := EnvOptions()
+	_ = opts
+	// scan := opts.Init(r, cmd, ...)
+	cmd := exec.Command(path, args...)
 	cmd.Stdout = os.Stdout
+	cmd.Env = cleanEnv()
+	rc, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	scan := opts.Init(rc, name)
+	_ = scan
 
 	return nil
 }
@@ -181,6 +351,12 @@ func xmain() {
 }
 
 func main() {
+	{
+		b := allocBytes(0, 1024*1024*1024*4)
+		time.Sleep(time.Hour)
+		fmt.Printf("%c", b[0])
+		return
+	}
 	{
 		buf := bytes.NewBuffer([]byte("hello!"))
 		// r := allocBufioReader(buf, 32*1024*1024)
@@ -217,79 +393,12 @@ func allocBufioReader(rd io.Reader, size int) *bufio.Reader {
 	return b
 }
 
-const TestInput = `
-log line 1
-log line 2
-log line 3
-log line 4
-log line 5
-log line 6
+func allocBytes(len, cap int) []byte {
+	b := make([]byte, cap)
+	for i := range b {
+		b[i] = 0
+	}
+	return b[0:len:cap]
+}
 
-panic: runtime error: invalid memory address or nil pointer dereference
-[signal SIGSEGV: segmentation violation code=0x1 addr=0x40 pc=0x7260d4]
-
-goroutine 5 [running]:
-golang.org/x/tools/internal/lsp/source.qualifier(0x0, 0x0, 0x0, 0x8fa280)
-	/home/nohup/Golang/src/golang.org/x/tools/internal/lsp/source/completion_format.go:173 +0x34
-golang.org/x/tools/internal/lsp/source.DocumentSymbols(0x8f5420, 0xc000070fc0, 0x8f93a0, 0xc000237170, 0xc0001893e0, 0x2d, 0x8f93a0)
-	/home/nohup/Golang/src/golang.org/x/tools/internal/lsp/source/symbols.go:48 +0x151
-golang.org/x/tools/internal/lsp.(*Server).documentSymbol(0xc00014a4d0, 0x8f5420, 0xc000070fc0, 0xc00017fbf0, 0xc00017fbf0, 0x0, 0x0, 0x0, 0xc000168320)
-	/home/nohup/Golang/src/golang.org/x/tools/internal/lsp/symbols.go:22 +0x138
-golang.org/x/tools/internal/lsp.(*Server).DocumentSymbol(0xc00014a4d0, 0x8f5420, 0xc000070fc0, 0xc00017fbf0, 0xc00017fbf0, 0x0, 0x0, 0x0, 0x0)
-	/home/nohup/Golang/src/golang.org/x/tools/internal/lsp/server.go:198 +0x4d
-golang.org/x/tools/internal/lsp/protocol.serverHandler.func1(0x8f5420, 0xc000070fc0, 0xc00014a540, 0xc00000ef80)
-	/home/nohup/Golang/src/golang.org/x/tools/internal/lsp/protocol/tsserver.go:346 +0x4adb
-golang.org/x/tools/internal/jsonrpc2.(*Conn).Run.func1(0xc000026ba0, 0xc00014a540)
-	/home/nohup/Golang/src/golang.org/x/tools/internal/jsonrpc2/jsonrpc2.go:276 +0xda
-created by golang.org/x/tools/internal/jsonrpc2.(*Conn).Run
-	/home/nohup/Golang/src/golang.org/x/tools/internal/jsonrpc2/jsonrpc2.go:270 +0xba
-[Error - 3:27:07 AM] Connection to server got closed. Server will not be restarted.
-[Error - 3:27:07 AM] Request textDocument/documentSymbol failed.
-Error: Connection got disposed.
-    at Object.dispose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/main.js:876:25)
-    at Object.dispose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:57:35)
-    at LanguageClient.handleConnectionClosed (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:2036:42)
-    at LanguageClient.handleConnectionClosed (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/main.js:127:15)
-    at closeHandler (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:2023:18)
-    at CallbackList.invoke (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:62:39)
-    at Emitter.fire (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:120:36)
-    at closeHandler (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/main.js:226:26)
-    at CallbackList.invoke (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:62:39)
-    at Emitter.fire (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:120:36)
-    at StreamMessageReader.fireClose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/messageReader.js:111:27)
-    at Socket.listen.readable.on (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/messageReader.js:151:46)
-    at Socket.emit (events.js:187:15)
-    at Pipe.Socket._destroy._handle.close [as _onclose] (net.js:596:12)
-[Error - 3:27:07 AM] Request textDocument/codeAction failed.
-Error: Connection got disposed.
-    at Object.dispose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/main.js:876:25)
-    at Object.dispose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:57:35)
-    at LanguageClient.handleConnectionClosed (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:2036:42)
-    at LanguageClient.handleConnectionClosed (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/main.js:127:15)
-    at closeHandler (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:2023:18)
-    at CallbackList.invoke (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:62:39)
-    at Emitter.fire (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:120:36)
-    at closeHandler (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/main.js:226:26)
-    at CallbackList.invoke (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:62:39)
-    at Emitter.fire (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:120:36)
-    at StreamMessageReader.fireClose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/messageReader.js:111:27)
-    at Socket.listen.readable.on (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/messageReader.js:151:46)
-    at Socket.emit (events.js:187:15)
-    at Pipe.Socket._destroy._handle.close [as _onclose] (net.js:596:12)
-[Error - 3:27:07 AM] Request textDocument/documentLink failed.
-Error: Connection got disposed.
-    at Object.dispose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/main.js:876:25)
-    at Object.dispose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:57:35)
-    at LanguageClient.handleConnectionClosed (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:2036:42)
-    at LanguageClient.handleConnectionClosed (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/main.js:127:15)
-    at closeHandler (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-languageclient/lib/client.js:2023:18)
-    at CallbackList.invoke (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:62:39)
-    at Emitter.fire (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:120:36)
-    at closeHandler (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/main.js:226:26)
-    at CallbackList.invoke (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:62:39)
-    at Emitter.fire (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/events.js:120:36)
-    at StreamMessageReader.fireClose (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/messageReader.js:111:27)
-    at Socket.listen.readable.on (/home/nohup/.vscode-insiders/extensions/ms-vscode.go-0.10.2/node_modules/vscode-jsonrpc/lib/messageReader.js:151:46)
-    at Socket.emit (events.js:187:15)
-    at Pipe.Socket._destroy._handle.close [as _onclose] (net.js:596:12)
-`
+const TestInput = ``
