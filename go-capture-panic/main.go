@@ -8,9 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -249,7 +253,7 @@ func (r *Reader) ReadBytesPanic(delim byte) ([]byte, error) {
 }
 
 // TODO (CEV): rename
-func (s *Scanner) Scan(w io.Writer) (err error) {
+func (s *Scanner) Consume(w io.Writer) (err error) {
 	for {
 		b, e := s.rd.ReadBytes('\n')
 		if len(b) != 0 {
@@ -316,6 +320,33 @@ func cleanEnv() []string {
 	return a
 }
 
+var signals = [...]os.Signal{
+	syscall.SIGABRT,
+	syscall.SIGALRM,
+	// syscall.SIGCHLD, // ignore
+	syscall.SIGCONT,
+	syscall.SIGHUP,
+	syscall.SIGINFO,
+	syscall.SIGINT,
+	// syscall.SIGKILL, // can't catch
+	syscall.SIGQUIT,
+	syscall.SIGSTOP,
+	syscall.SIGTERM,
+	// syscall.SIGTSTP, // can't catch
+	syscall.SIGURG,
+	syscall.SIGUSR1,
+}
+
+func monitorSignals(cmd *exec.Cmd) {
+	ch := make(chan os.Signal, 64)
+	signal.Notify(ch, signals[:]...)
+	for sig := range ch {
+		if err := cmd.Process.Signal(sig); err != nil {
+			// WARN: do something
+		}
+	}
+}
+
 func realMain(name string, args []string) error {
 	path, err := exec.LookPath(name)
 	if err != nil {
@@ -333,6 +364,26 @@ func realMain(name string, args []string) error {
 	}
 	scan := opts.Init(rc, name)
 	_ = scan
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := cmd.Wait(); err != nil {
+			Fatal(err) // WARN: don't actually do this
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := scan.Consume(os.Stderr); err != nil {
+			Fatal(err) // WARN: don't actually do this
+		}
+	}()
+
+	wg.Wait()
 
 	return nil
 }
@@ -402,3 +453,22 @@ func allocBytes(len, cap int) []byte {
 }
 
 const TestInput = ``
+
+func Fatal(err interface{}) {
+	if err == nil {
+		return
+	}
+	var s string
+	if _, file, line, ok := runtime.Caller(1); ok && file != "" {
+		s = fmt.Sprintf("Error (%s:%d)", filepath.Base(file), line)
+	} else {
+		s = "Error"
+	}
+	switch err.(type) {
+	case error, string, fmt.Stringer:
+		fmt.Fprintf(os.Stderr, "%s: %s\n", s, err)
+	default:
+		fmt.Fprintf(os.Stderr, "%s: %#v\n", s, err)
+	}
+	os.Exit(1)
+}
