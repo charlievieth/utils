@@ -70,7 +70,7 @@ func ExecutableMode(m os.FileMode) bool {
 	return m&mask != 0
 }
 
-// Previously 32k
+// Tested with 16 and 32k and 8k seems best
 const bufSize = 8 * 1024
 
 var bufPool sync.Pool
@@ -82,7 +82,7 @@ func getBuf() []byte {
 			b[i] = 0
 		}
 	}
-	return make([]byte, 8*1024)
+	return make([]byte, bufSize)
 }
 
 func isBinary(b []byte) bool {
