@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,11 +28,15 @@ func Unescape(b []byte) []byte {
 	return b
 }
 
-func ReplaceControlChars(src []byte) []byte {
+func ReplaceControlChars(src []byte, escapeSingleNewline bool) []byte {
 	initRe.Do(func() {
 		escapeRe = regexp.MustCompile(`\\x[[:xdigit:]]{2}`)
 	})
 	b := bytes.ReplaceAll(src, []byte(`\r\n`), []byte{'\n'})
+	// WARN
+	if escapeSingleNewline {
+		b = bytes.ReplaceAll(src, []byte(`\n`), []byte{'\n'})
+	}
 	b = bytes.ReplaceAll(b, []byte(`\t`), []byte{'\t'})
 	return escapeRe.ReplaceAllFunc(b, Unescape)
 }
@@ -42,7 +47,7 @@ func Stream(r io.Reader, w io.Writer) error {
 	for {
 		b, er := br.ReadBytes('\n')
 		if len(b) != 0 {
-			_, ew := w.Write(append(ReplaceControlChars(b), '\n'))
+			_, ew := w.Write(append(ReplaceControlChars(b, false), '\n'))
 			if ew != nil {
 				if er == nil || er == io.EOF {
 					er = ew
@@ -59,6 +64,40 @@ func Stream(r io.Reader, w io.Writer) error {
 	return err
 }
 
+func ReplaceFile(name string) error {
+	src, err := ioutil.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	singleRe := regexp.MustCompile(`(?m)b'[^']+'`)
+	src = singleRe.ReplaceAllFunc(src, func(b []byte) []byte {
+		b = bytes.TrimPrefix(b, []byte(`b'`))
+		b = bytes.TrimSuffix(b, []byte{'\''})
+		if len(b) == 0 {
+			return b
+		}
+		return ReplaceControlChars(b, true)
+	})
+	doubleRe := regexp.MustCompile(`(?m)b"[^"]+"`)
+	src = doubleRe.ReplaceAllFunc(src, func(b []byte) []byte {
+		b = bytes.TrimPrefix(b, []byte(`b"`))
+		b = bytes.TrimSuffix(b, []byte{'"'})
+		if len(b) == 0 {
+			return b
+		}
+		return ReplaceControlChars(b, true)
+	})
+	if _, err := os.Stdout.Write(src); err != nil {
+		return err
+	}
+	return nil
+}
+
+func IndentJSON(src []byte) []byte {
+	// re := regexp.
+	return nil
+}
+
 func Usage() {
 	const msg = "Usage: %s [STRING]...\n" +
 		"Unescape Python binary data (by default stdin is read from)\n"
@@ -67,8 +106,17 @@ func Usage() {
 }
 
 func realMain() error {
+	// WARN: this is just a hack as it kinda breaks the current design
+	var filename string
+	flag.StringVar(&filename, "f", "", "Filename to read from")
 	flag.Usage = Usage
 	flag.Parse()
+
+	// WARN: this kinda breaks the design
+	if filename != "" {
+		return ReplaceFile(filename)
+	}
+
 	if n := flag.NArg(); n == 0 || (n == 1 && flag.Arg(0) == "-") {
 		if err := Stream(os.Stdin, os.Stdout); err != nil {
 			return err
