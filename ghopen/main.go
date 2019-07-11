@@ -74,12 +74,14 @@ func TrimPathPrefix(path, prefix string) string {
 }
 
 func ConvertRemote(url string) (string, error) {
+	if strings.HasSuffix(url, ".git") {
+		url = strings.TrimSuffix(url, ".git")
+	}
 	if strings.HasPrefix(url, "https://github.com/") {
 		return url, nil
 	}
 	if strings.HasPrefix(url, "git@github.com:") {
 		s := strings.TrimPrefix(url, "git@github.com:")
-		s = strings.TrimSuffix(s, ".git")
 		return "https://github.com/" + s, nil
 	}
 	if strings.HasPrefix(url, "https://go.googlesource.com/") {
