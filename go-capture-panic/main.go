@@ -43,6 +43,11 @@ const (
 	defaultReaderSize = 16 * 1024 * 1024
 )
 
+var panicPrefixes = [...][]byte{
+	[]byte("panic: "),
+	[]byte("fatal error: "),
+}
+
 var panicBytes = []byte(panicPrefix)
 var ErrTooLong = errors.New("go-capture-panic: token too long")
 
@@ -224,6 +229,7 @@ func (r *Reader) ReadBytesPanic(delim byte) ([]byte, error) {
 
 		// the panic check must occur before breaking the loop
 		if !r.panicking && len(frag) >= len(panicPrefix) {
+			// fatal error:
 			r.panicking = bytes.HasPrefix(frag, panicBytes)
 		}
 
@@ -354,6 +360,9 @@ func realMain(name string, args []string) error {
 	}
 	opts := EnvOptions()
 	_ = opts
+
+	// stderr_r, stderr_w := io.Pipe()
+
 	// scan := opts.Init(r, cmd, ...)
 	cmd := exec.Command(path, args...)
 	cmd.Stdout = os.Stdout
