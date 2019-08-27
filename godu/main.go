@@ -96,9 +96,11 @@ type Walker struct {
 	Size Size
 }
 
-func (w *Walker) Walk(path string, fi os.FileInfo) error {
-	if fi != nil && fi.Mode().IsRegular() {
-		atomic.AddInt64((*int64)(&w.Size), fi.Size())
+func (w *Walker) Walk(path string, typ os.FileMode) error {
+	if typ.IsRegular() {
+		if size, err := GetFileSize(path); err == nil {
+			atomic.AddInt64((*int64)(&w.Size), size)
+		}
 	}
 	return nil
 }

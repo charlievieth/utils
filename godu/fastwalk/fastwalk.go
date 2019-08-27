@@ -40,7 +40,7 @@ var SkipFiles = errors.New("skip files")
 //   * Walk can follow symlinks if walkFn returns the TraverseLink
 //     sentinel error. It is the walkFn's responsibility to prevent
 //     Walk from going into symlink cycles.
-func Walk(root string, walkFn func(path string, fi os.FileInfo) error, errFn func(err error)) error {
+func Walk(root string, walkFn func(path string, typ os.FileMode) error, errFn func(err error)) error {
 	// TODO(bradfitz): make numWorkers configurable? We used a
 	// minimum of 4 to give the kernel more info about multiple
 	// things we want, in hopes its I/O scheduling can take
@@ -60,7 +60,7 @@ func Walk(root string, walkFn func(path string, fi os.FileInfo) error, errFn fun
 	return walkN(root, walkFn, errFn, numWorkers)
 }
 
-func walkN(root string, walkFn func(path string, fi os.FileInfo) error, errFn func(err error), numWorkers int) error {
+func walkN(root string, walkFn func(path string, typ os.FileMode) error, errFn func(err error), numWorkers int) error {
 	w := &walker{
 		fn:       walkFn,
 		enqueuec: make(chan walkItem, numWorkers), // buffered for performance
@@ -129,13 +129,13 @@ func (w *walker) doWork() {
 		case <-w.donec:
 			return
 		case it := <-w.workc:
-			w.resc <- w.walk(it.dir, it.fi, !it.callbackDone)
+			w.resc <- w.walk(it.dir, !it.callbackDone)
 		}
 	}
 }
 
 type walker struct {
-	fn func(path string, fi os.FileInfo) error
+	fn func(path string, typ os.FileMode) error
 
 	donec    chan struct{} // closed on Walk's return
 	workc    chan walkItem // to workers
@@ -145,7 +145,6 @@ type walker struct {
 
 type walkItem struct {
 	dir          string
-	fi           os.FileInfo
 	callbackDone bool // callback already called; don't do it again
 }
 
@@ -156,24 +155,23 @@ func (w *walker) enqueue(it walkItem) {
 	}
 }
 
-func (w *walker) onDirEnt(dirName, baseName string, fi os.FileInfo) error {
+func (w *walker) onDirEnt(dirName, baseName string, typ os.FileMode) error {
 	if len(baseName) == 0 {
 		return nil
 	}
 
 	joined := dirName + string(os.PathSeparator) + baseName
-	typ := fi.Mode() & os.ModeType
 	if typ == os.ModeDir {
-		w.enqueue(walkItem{dir: joined, fi: fi})
+		w.enqueue(walkItem{dir: joined})
 		return nil
 	}
 
-	err := w.fn(joined, fi)
+	err := w.fn(joined, typ)
 	if typ == os.ModeSymlink {
 		if err == TraverseLink {
 			// Set callbackDone so we don't call it twice for both the
 			// symlink-as-symlink and the symlink-as-directory later:
-			w.enqueue(walkItem{dir: joined, fi: fi, callbackDone: true})
+			w.enqueue(walkItem{dir: joined, callbackDone: true})
 			return nil
 		}
 		if err == filepath.SkipDir {
@@ -184,9 +182,9 @@ func (w *walker) onDirEnt(dirName, baseName string, fi os.FileInfo) error {
 	return err
 }
 
-func (w *walker) walk(root string, fi os.FileInfo, runUserCallback bool) error {
+func (w *walker) walk(root string, runUserCallback bool) error {
 	if runUserCallback {
-		err := w.fn(root, fi)
+		err := w.fn(root, os.ModeDir)
 		if err == filepath.SkipDir {
 			return nil
 		}

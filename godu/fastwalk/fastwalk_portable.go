@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build appengine !linux,!darwin,!freebsd,!openbsd,!netbsd
+
 package fastwalk
 
 import "os"
@@ -10,7 +12,7 @@ import "os"
 // It does not descend into directories or follow symlinks.
 // If fn returns a non-nil error, readDir returns with that error
 // immediately.
-func readDir(dirName string, fn func(dirName, entName string, fi os.FileInfo) error) error {
+func readDir(dirName string, fn func(dirName, entName string, typ os.FileMode) error) error {
 	fis, err := readDirEnts(dirName)
 	if err != nil {
 		return err
@@ -21,7 +23,7 @@ func readDir(dirName string, fn func(dirName, entName string, fi os.FileInfo) er
 		if skipFiles && typ == 0 {
 			continue
 		}
-		if err := fn(dirName, fi.Name(), fi); err != nil {
+		if err := fn(dirName, fi.Name(), typ); err != nil {
 			if err == SkipFiles {
 				skipFiles = true
 				continue
