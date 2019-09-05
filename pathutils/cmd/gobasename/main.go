@@ -26,7 +26,7 @@ func parseFlags() *flag.FlagSet {
 
 	set.Usage = func() {
 		fmt.Fprintf(set.Output(), "%s: [OPTIONS] [PATH...]\n", set.Name())
-		flag.PrintDefaults()
+		set.PrintDefaults()
 	}
 	// error handled by flag.ExitOnError
 	set.Parse(os.Args[1:])
