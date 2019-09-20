@@ -14,38 +14,34 @@ import (
 	"sync/atomic"
 )
 
-func formatJSON(r io.Reader) ([]byte, error) {
-	var v interface{}
-	if err := json.NewDecoder(r).Decode(v); err != nil {
-		return nil, err
-	}
-	return json.MarshalIndent(v, "", "    ")
-}
-
-type FormatFn func(dst *bytes.Buffer, src []byte) error
-
-func formatFile(name string, buf *bytes.Buffer, fn FormatFn) error {
+func formatFile(name, indent string, buf *bytes.Buffer) error {
 	f, err := os.OpenFile(name, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	fi, err := f.Stat()
-	if err != nil {
-		return err
-	}
 	buf.Reset()
-	buf.Grow(int(fi.Size() + bytes.MinRead))
-
-	if _, err := buf.ReadFrom(f); err != nil {
-		return err
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	if indent != "" {
+		enc.SetIndent("", indent)
 	}
-	src := make([]byte, buf.Len())
-	copy(src, buf.Bytes())
-	buf.Reset()
-	if err := fn(buf, src); err != nil {
-		return err
+	dec := json.NewDecoder(f)
+	for {
+		var m interface{}
+		de := dec.Decode(&m)
+		if de != nil && de != io.EOF {
+			return de
+		}
+		if ee := enc.Encode(m); ee != nil {
+			if de == nil || de == io.EOF {
+				return ee
+			}
+		}
+		if de != nil {
+			break // io.EOF
+		}
 	}
 
 	if _, err := f.Seek(0, 0); err != nil {
@@ -61,7 +57,7 @@ func formatFile(name string, buf *bytes.Buffer, fn FormatFn) error {
 	return f.Close()
 }
 
-func formatFiles(names []string, fn FormatFn) error {
+func formatFiles(names []string, indent string) error {
 	numCPU := runtime.NumCPU()
 	if n := len(names); n < numCPU {
 		numCPU = n
@@ -76,7 +72,7 @@ func formatFiles(names []string, fn FormatFn) error {
 			defer wg.Done()
 			var buf bytes.Buffer
 			for name := range in {
-				if err := formatFile(name, &buf, fn); err != nil {
+				if err := formatFile(name, indent, &buf); err != nil {
 					fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
 					atomic.AddInt64(errCount, 1)
 				}
@@ -121,15 +117,7 @@ func main() {
 	} else {
 		delim = strings.Repeat(" ", int(Indent))
 	}
-	var fn FormatFn
-	if Compact {
-		fn = json.Compact
-	} else {
-		fn = func(dst *bytes.Buffer, src []byte) error {
-			return json.Indent(dst, src, "", delim)
-		}
-	}
-	if err := formatFiles(flag.Args(), fn); err != nil {
+	if err := formatFiles(flag.Args(), delim); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
