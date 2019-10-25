@@ -1,0 +1,7 @@
+#!/usr/local/bin bash
+
+set -euo pipefail
+
+go run github.com/charlievieth/utils/subl-completion | tee /usr/local/etc/bash_completion.d/subl
+
+# ex: ts=4 sw=4 et filetype=sh
