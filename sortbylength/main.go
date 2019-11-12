@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -22,12 +21,6 @@ func (b byLen) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func Fatalf(format string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, format, a...)
 	os.Exit(1)
-}
-
-var printTime bool
-
-func init() {
-	flag.BoolVar(&printTime, "time", false, "print runtime")
 }
 
 type Reader struct {
@@ -55,6 +48,27 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 	return r.buf, err
 }
 
+func isSpace(r byte) bool {
+	return r == '\n' || r == ' ' || r == '\t' || r == '\r'
+}
+
+func trimSpace(s []byte) []byte {
+	i := 0
+	for ; i < len(s) && isSpace(s[i]); i++ {
+	}
+	s = s[i:]
+	i = len(s) - 1
+	for ; i >= 0 && isSpace(s[i]); i-- {
+	}
+	return s[:i+1]
+}
+
+var printTime bool
+
+func init() {
+	flag.BoolVar(&printTime, "time", false, "print runtime")
+}
+
 func main() {
 	flag.Parse()
 	startTime := time.Now()
@@ -66,13 +80,18 @@ func main() {
 	lines := make([]string, 0, 128)
 	var err error
 	for err == nil {
-		var b []byte
-		b, err = in.ReadBytes('\n')
-		if b = bytes.TrimSpace(b); len(b) != 0 {
+		b, e := in.ReadBytes('\n')
+		if b = trimSpace(b); len(b) != 0 {
 			lines = append(lines, string(b))
 		}
+		if e != nil {
+			if e != io.EOF {
+				err = e
+			}
+			break
+		}
 	}
-	if err != nil && err != io.EOF {
+	if err != nil {
 		Fatalf("reading stdin: %s\n", err)
 	}
 
