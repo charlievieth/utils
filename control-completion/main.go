@@ -21,37 +21,34 @@ func ContainerOrGroupArg(cmd *cobra.Command, args []string) error {
 	return cobra.ExactArgs(1)(cmd, args)
 }
 
-func AddAncestorsCmd(root *cobra.Command) {
+func AddAncestorsCmd() *cobra.Command {
 	// positional arguments:
 	//   image       the image name
 	//   version     the image version
 	cmd := &cobra.Command{
 		Use: "ancestors",
-		Run: func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddBuildCmd(root *cobra.Command) {
+func AddBuildCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "build",
 		Args: ImageArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.Bool("download-tar", false, "")
 	flags.String("sub-image", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddCleanCmd(root *cobra.Command) {
+func AddCleanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "clean",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("preserve-overrides", "p", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
 /*
@@ -73,80 +70,71 @@ func ContextArg() cobra.PositionalArgs {
 	return cobra.ExactArgs(1)
 }
 
-func AddContextCmd(root *cobra.Command) {
+func AddContextCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "context",
-		Run: func(*cobra.Command, []string) {},
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:  "list",
 		Args: cobra.NoArgs,
-		Run:  func(*cobra.Command, []string) {},
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:  "use",
 		Args: ContextArg(),
-		Run:  func(*cobra.Command, []string) {},
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:  "create",
 		Args: ContextArg(),
-		Run:  func(*cobra.Command, []string) {},
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:  "delete",
 		Args: ContextArg(),
-		Run:  func(*cobra.Command, []string) {},
 	})
 	// Add completion aliases
 	for _, c := range cmd.Commands() {
 		c.Aliases = append(c.Aliases, c.Use)
 		c.SuggestFor = append(c.SuggestFor, c.Use)
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddDeployCmd(root *cobra.Command) {
+func AddDeployCmd() *cobra.Command {
 	// WARN: ignoring this
 	cmd := &cobra.Command{
 		Use: "deploy",
-		Run: func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddDiscoverCmd(root *cobra.Command) {
+func AddDiscoverCmd() *cobra.Command {
 	// WARN: ignoring this
 	cmd := &cobra.Command{
 		Use: "discover",
-		Run: func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddEnsureCmd(root *cobra.Command) {
+func AddEnsureCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "ensure",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("group", "g", "", "") // TODO: Add completion for this
 	flags.BoolP("all", "a", false, "")
 	flags.BoolP("only", "o", false, "")
 	flags.Bool("json", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddEnterCmd(root *cobra.Command) {
+func AddEnterCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "enter",
 		Args: ContainerArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddExtractCmd(root *cobra.Command) {
+func AddExtractCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "extract",
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -156,7 +144,6 @@ func AddExtractCmd(root *cobra.Command) {
 			//   dest       the destination path
 			return cobra.ExactArgs(3)(cmd, args)
 		},
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("image", "i", "", "") // TODO: Add completion for this
@@ -165,21 +152,20 @@ func AddExtractCmd(root *cobra.Command) {
 	flags.StringP("version", "v", "", "")
 	flags.StringP("sub-image", "s", "", "")
 	flags.BoolP("container-only", "c", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddKillCmd(root *cobra.Command) {
+func AddKillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "kill",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("id", "i", "", "")
 	flags.StringP("signal", "s", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddListCmd(root *cobra.Command) {
+func AddListCmd() *cobra.Command {
 	// Examples:
 	//     control list
 	//     control list images
@@ -188,16 +174,14 @@ func AddListCmd(root *cobra.Command) {
 	cmd := &cobra.Command{
 		Use:  "list",
 		Args: cobra.MaximumNArgs(1),
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddLogsCmd(root *cobra.Command) {
+func AddLogsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "logs",
 		Args: ContainerArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.String("filepath", "", "")
@@ -205,30 +189,27 @@ func AddLogsCmd(root *cobra.Command) {
 	flags.StringP("pattern", "p", "", "")
 	flags.BoolP("follow", "f", false, "")
 	flags.BoolP("insensitive-case", "i", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddManifestCmd(root *cobra.Command) {
+func AddManifestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "manifest",
 		Args: ImageArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddPublishManifestCmd(root *cobra.Command) {
+func AddPublishManifestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "publish-manifest",
-		Run: func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddOverrideCmd(root *cobra.Command) {
+func AddOverrideCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "override",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.BoolP("list", "l", false, "")
@@ -239,112 +220,102 @@ func AddOverrideCmd(root *cobra.Command) {
 	flags.String("service-release", "", "")
 	flags.BoolP("clear", "c", false, "")
 	flags.BoolP("unset", "u", false, "") // TODO: Complete image
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddProvisionCmd(root *cobra.Command) {
+func AddProvisionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "provision",
 		Args: ContainerArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddPullCmd(root *cobra.Command) {
+func AddPullCmd() *cobra.Command {
 	// positional arguments:
 	//   image    the image name
 	//   version  the image version
 	cmd := &cobra.Command{
 		Use:  "pull",
 		Args: cobra.MaximumNArgs(2),
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("group", "g", "", "")
 	flags.StringP("registry-url", "r", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddPushCmd(root *cobra.Command) {
+func AddPushCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "push",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.Bool("nomanifest", false, "")
 	flags.String("regions", "", "")
 	flags.StringP("group", "g", "", "")
 	flags.StringP("cluster-name", "c", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddPushManifestCmd(root *cobra.Command) {
+func AddPushManifestCmd() *cobra.Command {
 	// positional arguments:
 	//   name     the image name
 	//   version  the image version
 	cmd := &cobra.Command{
 		Use:  "push-manifest",
 		Args: cobra.ExactArgs(2),
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddRdependsCmd(root *cobra.Command) {
+func AddRdependsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "rdepends",
 		Args: ImageArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
 // skipping
-func AddRegisterHostCmd(root *cobra.Command) {
+func AddRegisterHostCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "register-host",
-		Run: func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
 // skipping
-func AddReleaseCmd(root *cobra.Command) {
+func AddReleaseCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "release",
-		Run: func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddResetCmd(root *cobra.Command) {
+func AddResetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "reset",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.Bool("no-clean", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddRestartCmd(root *cobra.Command) {
+func AddRestartCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "restart",
 		Args: ContainerArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddRunCmd(root *cobra.Command) {
+func AddRunCmd() *cobra.Command {
 	// positional arguments:
 	//   container  the container to run
 	//   subargs    arguments passed to command
 	cmd := &cobra.Command{
 		Use:  "run",
 		Args: cobra.MinimumNArgs(1),
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("group", "g", "", "")
@@ -355,73 +326,67 @@ func AddRunCmd(root *cobra.Command) {
 	flags.Bool("background", false, "")
 	flags.StringP("debug", "d", "", "")
 	flags.StringP("command", "c", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
 // skipping
-func AddSnapshotCmd(root *cobra.Command) {
+func AddSnapshotCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "snapshot",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("group", "g", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddStartCmd(root *cobra.Command) {
+func AddStartCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "start",
 		Args: ContainerArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("group", "g", "", "")
 	flags.Bool("json", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddStatsCmd(root *cobra.Command) {
+func AddStatsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "stats",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.BoolP("post", "p", false, "")
 	flags.StringP("failure", "f", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddStatusCmd(root *cobra.Command) {
+func AddStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "status",
 		Aliases: []string{"ps"},
 		Args:    ContainerOrGroupArg, // optional
-		Run:     func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.BoolP("all", "a", false, "")
 	flags.BoolP("time", "t", false, "")
 	flags.BoolP("verbose", "v", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddStopCmd(root *cobra.Command) {
+func AddStopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "stop",
 		Args: ContainerArg, // optional
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("group", "g", "", "")
 	flags.BoolP("all", "a", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddTestCmd(root *cobra.Command) {
+func AddTestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "test",
-		Run: func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.BoolP("debug", "d", false, "")
@@ -429,26 +394,24 @@ func AddTestCmd(root *cobra.Command) {
 	flags.StringP("bracket-id", "b", "", "")
 	flags.StringP("environment", "e", "", "")
 	flags.String("archive-url", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddTreeCmd(root *cobra.Command) {
+func AddTreeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "tree",
 		Args: ContainerOrGroupArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddUpdateCmd(root *cobra.Command) {
+func AddUpdateCmd() *cobra.Command {
 	// positional arguments:
 	//   image  parent image
 	//   child  child images to update
 	cmd := &cobra.Command{
 		Use:  "update",
 		Args: cobra.MaximumNArgs(2),
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.StringP("author", "a", "", "")
@@ -458,34 +421,32 @@ func AddUpdateCmd(root *cobra.Command) {
 	flags.StringP("revision", "R", "", "")
 	flags.StringP("env", "e", "", "")
 	flags.StringP("branch-name", "b", "", "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddUrlCmd(root *cobra.Command) {
+func AddUrlCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "url",
 		Args: ContainerArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.BoolP("public", "p", false, "")
 	flags.BoolP("local", "l", false, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
-func AddVersionCmd(root *cobra.Command) {
+func AddVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:  "version",
 		Args: ImageArg,
-		Run:  func(*cobra.Command, []string) {},
 	}
 	flags := cmd.LocalFlags()
 	flags.IntP("limit", "l", 0, "")
-	root.AddCommand(cmd)
+	return cmd
 }
 
 func AddSubCmds(root *cobra.Command) *cobra.Command {
-	cmds := []func(*cobra.Command){
+	cmds := []func() *cobra.Command{
 		AddAncestorsCmd,
 		AddBuildCmd,
 		AddCleanCmd,
@@ -522,8 +483,11 @@ func AddSubCmds(root *cobra.Command) *cobra.Command {
 		AddUrlCmd,
 		AddVersionCmd,
 	}
-	for _, cmd := range cmds {
-		cmd(root)
+	for _, fn := range cmds {
+		cmd := fn()
+		cmd.Run = func(*cobra.Command, []string) {}
+		cmd.LocalFlags().SortFlags = false
+		root.AddCommand(cmd)
 	}
 	return root
 }
