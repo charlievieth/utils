@@ -94,6 +94,7 @@ func AddContextCmd() *cobra.Command {
 	for _, c := range cmd.Commands() {
 		c.Aliases = append(c.Aliases, c.Use)
 		c.SuggestFor = append(c.SuggestFor, c.Use)
+		cmd.ValidArgs = append(cmd.ValidArgs, c.Use)
 	}
 	return cmd
 }
@@ -488,6 +489,7 @@ func AddSubCmds(root *cobra.Command) *cobra.Command {
 		cmd.Run = func(*cobra.Command, []string) {}
 		cmd.LocalFlags().SortFlags = false
 		root.AddCommand(cmd)
+		root.ValidArgs = append(root.ValidArgs, cmd.Use)
 	}
 	return root
 }
