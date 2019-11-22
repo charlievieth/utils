@@ -24,23 +24,18 @@ func formatFile(name, indent string, buf *bytes.Buffer) error {
 	buf.Reset()
 	enc := json.NewEncoder(buf)
 	enc.SetEscapeHTML(false)
-	if indent != "" {
-		enc.SetIndent("", indent)
-	}
+	enc.SetIndent("", indent)
 	dec := json.NewDecoder(f)
 	for {
 		var m interface{}
-		de := dec.Decode(&m)
-		if de != nil && de != io.EOF {
-			return de
-		}
-		if ee := enc.Encode(m); ee != nil {
-			if de == nil || de == io.EOF {
-				return ee
+		if err := dec.Decode(&m); err != nil {
+			if err != io.EOF {
+				return err
 			}
+			break // ok
 		}
-		if de != nil {
-			break // io.EOF
+		if err := enc.Encode(m); err != nil {
+			return err
 		}
 	}
 
@@ -112,9 +107,12 @@ func parseFlags() {
 func main() {
 	parseFlags()
 	var delim string
-	if UseTabs {
+	switch {
+	case UseTabs:
 		delim = "\t"
-	} else {
+	case Compact:
+		delim = ""
+	default:
 		delim = strings.Repeat(" ", int(Indent))
 	}
 	if err := formatFiles(flag.Args(), delim); err != nil {
