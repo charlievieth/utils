@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -224,7 +225,23 @@ func readdirnames(path string) ([]string, error) {
 }
 
 func main() {
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to `file`")
 	paths, flags := parseFlags()
+
+	if *cpuprofile != "" {
+		f, err := os.OpenFile(*cpuprofile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "could not create CPU profile: ", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Fprintln(os.Stderr, "could not start CPU profile: ", err)
+			os.Exit(1)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
 	if len(paths) == 1 && paths[0] == "." {
 		var err error
 		paths, err = readdirnames(".")

@@ -41,17 +41,11 @@ var SkipFiles = errors.New("skip files")
 //     sentinel error. It is the walkFn's responsibility to prevent
 //     Walk from going into symlink cycles.
 func Walk(root string, walkFn func(path string, typ os.FileMode) error, errFn func(err error)) error {
-	// TODO(bradfitz): make numWorkers configurable? We used a
-	// minimum of 4 to give the kernel more info about multiple
-	// things we want, in hopes its I/O scheduling can take
-	// advantage of that. Hopefully most are in cache. Maybe 4 is
-	// even too low of a minimum. Profile more.
-	//
 	// CEV: More than 10 workers and performance degrades.
 	numWorkers := 4
 	if n := runtime.NumCPU(); n > numWorkers {
 		//
-		if n > 10 {
+		if n > 16 {
 			numWorkers = 10
 		} else {
 			numWorkers = n
