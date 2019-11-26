@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image/color"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +29,146 @@ func init() {
 type XY struct {
 	X float32 `json:"x"`
 	Y float32 `json:"y"`
+}
+
+func XYToColor(x, y float64) color.RGBA {
+	const Y = 1.0
+	z := 1.0 - x - y // TODO: move to Z
+	X := (Y / y) * x
+	Z := (Y / y) * z
+
+	// Convert to RGB using Wide RGB D65 conversion
+	r := X*1.656492 - Y*0.354851 - Z*0.255038
+	g := -X*0.707196 + Y*1.655397 + Z*0.036152
+	b := X*0.051713 - Y*0.121364 + Z*1.011530
+
+	switch {
+	case r > b && r > g && r > 1.0:
+		// red is too big
+		g /= r
+		b /= r
+		r = 1.0
+	case g > b && g > r && g > 1.0:
+		// green is too big
+		r /= g
+		b /= g
+		g = 1.0
+	case b > r && b > g && b > 1.0:
+		// blue is too big
+		r /= b
+		g /= b
+		b = 1.0
+	}
+
+	// TODO: make sure this is correct
+	//
+	// Apply reverse gamma correction
+	if r <= 0.0031308 {
+		r = 12.92 * r
+	} else {
+		r = (1.0+0.055)*math.Pow(r, (1.0/2.4)) - 0.055
+	}
+	if g <= 0.0031308 {
+		g = 12.92 * g
+	} else {
+		g = (1.0+0.055)*math.Pow(g, (1.0/2.4)) - 0.055
+	}
+	if b <= 0.0031308 {
+		b = 12.92 * b
+	} else {
+		b = (1.0+0.055)*math.Pow(b, (1.0/2.4)) - 0.055
+	}
+
+	switch {
+	case r > b && r > g:
+		// red is biggest
+		if r > 1.0 {
+			g /= r
+			b /= r
+			r = 1.0
+		}
+	case g > b && g > r:
+		// green is biggest
+		if g > 1.0 {
+			r /= g
+			b /= g
+			g = 1.0
+		}
+	case b > r && b > g:
+		// blue is biggest
+		if b > 1.0 {
+			r /= b
+			g /= b
+			b = 1.0
+		}
+	}
+
+	fmt.Println("R:", r, uint8(r*math.MaxUint8))
+	fmt.Println("G:", g, uint8(g*math.MaxUint8))
+	fmt.Println("B:", b, uint8(b*math.MaxUint8))
+
+	return color.RGBA{
+		R: uint8(r * math.MaxUint8),
+		G: uint8(g * math.MaxUint8),
+		B: uint8(b * math.MaxUint8),
+	}
+}
+
+func (x XY) RGB(brightness uint8) color.RGBA {
+	// https://developers.meethue.com/develop/application-design-guidance/color-conversion-formulas-rgb-to-xy-and-back/
+	//
+	// Calculate XYZ values
+	xX := float64(x.X)
+	xY := float64(x.Y)
+	z := 1.0 - xX - xY
+	Y := float64(brightness) / 254.0
+	fmt.Printf("X: %f Y: %f\n", x.X, x.Y)
+	fmt.Println("BRIGHTNESS:", Y, brightness)
+	Y = 0.75
+	X := (Y / xY) * xX
+	Z := (Y / xY) * z
+
+	// Convert to RGB using Wide RGB D65 conversion
+	r := X*1.656492 - Y*0.354851 - Z*0.255038
+	g := -X*0.707196 + Y*1.655397 + Z*0.036152
+	b := X*0.051713 - Y*0.121364 + Z*1.011530
+
+	// WARN: something here is broken the follow code fails
+	// to bound R to 0..1
+	//
+	// Apply reverse gamma correction
+	if r <= 0.0031308 {
+		r = 12.92 * r
+	} else {
+		r = (1.0+0.055)*math.Pow(r, (1.0/2.4)) - 0.055
+	}
+	if g <= 0.0031308 {
+		g = 12.92 * g
+	} else {
+		g = (1.0+0.055)*math.Pow(g, (1.0/2.4)) - 0.055
+	}
+	if b <= 0.0031308 {
+		b = 12.92 * b
+	} else {
+		b = (1.0+0.055)*math.Pow(b, (1.0/2.4)) - 0.055
+	}
+	fmt.Printf("XY: R: %f G: %f B: %f\n", r, g, b)
+
+	// WARN: we should not need this!!!
+	clamp := func(f float64) uint8 {
+		if f >= 1 {
+			f = 1
+		}
+		if f <= 0 {
+			f = 0
+		}
+		return uint8(f * 254.0)
+	}
+	return color.RGBA{
+		R: clamp(r),
+		G: clamp(g),
+		B: clamp(b),
+	}
 }
 
 func (x *XY) UnmarshalJSON(b []byte) error {
@@ -125,7 +268,7 @@ func (c *ColorGamut) UnmarshalJSON(b []byte) error {
 	if string(b) == "null" {
 		return nil
 	}
-	var gamut [3][3]float32
+	var gamut [3][2]float32
 	if err := json.Unmarshal(b, &gamut); err != nil {
 		return err
 	}
@@ -138,7 +281,7 @@ func (c *ColorGamut) UnmarshalJSON(b []byte) error {
 }
 
 func (c ColorGamut) MarshalJSON() ([]byte, error) {
-	gamut := [3][3]float32{
+	gamut := [3][2]float32{
 		0: {c.Red.X, c.Red.Y},
 		1: {c.Green.X, c.Green.Y},
 		2: {c.Blue.X, c.Blue.Y},
@@ -147,16 +290,21 @@ func (c ColorGamut) MarshalJSON() ([]byte, error) {
 }
 
 type State struct {
-	On               bool    `json:"on"`
-	Reachable        bool    `json:"reachable"`
-	Brightness       uint8   `json:"bri"`
-	Saturation       *uint8  `json:"sat,omitempty"`
-	Hue              *uint16 `json:"hue,omitempty"`
-	ColorTemperature uint16  `json:"ct"`
-	Alert            string  `json:"alert"`
-	Effect           string  `json:"effect,omitempty"`
-	ColorMode        string  `json:"colormode"`
-	XY               *XY     `json:"xy,omitempty"`
+	On               bool      `json:"on"`
+	Reachable        bool      `json:"reachable"`
+	Brightness       uint8     `json:"bri"`
+	Saturation       *uint8    `json:"sat,omitempty"`
+	Hue              *uint16   `json:"hue,omitempty"`
+	ColorTemperature uint16    `json:"ct"`
+	Alert            string    `json:"alert"`
+	Effect           string    `json:"effect,omitempty"`
+	ColorMode        ColorMode `json:"colormode"`
+	XY               *XY       `json:"xy,omitempty"`
+}
+
+type SoftwareUpdate struct {
+	LastInstall PhueTime `json:"lastinstall"`
+	State       string   `json:"state"`
 }
 
 type Streaming struct {
@@ -183,19 +331,21 @@ type Capabilities struct {
 	Streaming Streaming `json:"streaming"`
 }
 
+// TODO: might wanna add "omitempty" tag
 type Light struct {
-	Type              string       `json:"type"`
-	Name              string       `json:"name"`
-	ProductName       string       `json:"productname"`
-	ManufacturerName  string       `json:"manufacturername"`
-	ModelID           string       `json:"modelid"`
-	UniqueID          string       `json:"uniqueid"`
-	LuminaireUniqueID string       `json:"luminaireuniqueid"`
-	SoftwareVersion   string       `json:"swversion"`
-	Streaming         Streaming    `json:"streaming"`
-	Capabilities      Capabilities `json:"capabilities"`
-	Config            LightConfig  `json:"config"`
-	State             State        `json:"state"`
+	Type              string         `json:"type"`
+	Name              string         `json:"name"`
+	ProductName       string         `json:"productname"`
+	ManufacturerName  string         `json:"manufacturername"`
+	ModelID           string         `json:"modelid"`
+	UniqueID          string         `json:"uniqueid"`
+	LuminaireUniqueID string         `json:"luminaireuniqueid"`
+	SoftwareVersion   string         `json:"swversion"`
+	Streaming         Streaming      `json:"streaming"`
+	Capabilities      Capabilities   `json:"capabilities"`
+	Config            LightConfig    `json:"config"`
+	State             State          `json:"state"`
+	SoftwareUpdate    SoftwareUpdate `json:"swupdate"`
 }
 
 type LightConfig struct {
@@ -355,14 +505,62 @@ func (r *RateLimit) Wait() {
 	return
 }
 
-func main() {
+const PhueTimeFormat = "2006-01-02T15:04:05"
 
+type PhueTime time.Time
+
+func (p PhueTime) Time() time.Time { return time.Time(p) }
+
+func (p *PhueTime) MarshalJSON() ([]byte, error) {
+	t := p.Time()
+	if y := t.Year(); y < 0 || y >= 10000 {
+		return nil, errors.New("PhueTime.MarshalJSON: year outside of range [0,9999]")
+	}
+	b := make([]byte, 0, len(PhueTimeFormat)+2)
+	b = append(b, '"')
+	b = t.AppendFormat(b, PhueTimeFormat)
+	b = append(b, '"')
+	return b, nil
+}
+
+func (p *PhueTime) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return nil
+	}
+	t, err := time.Parse(`"`+PhueTimeFormat+`"`, string(data))
+	if err != nil {
+		return err
+	}
+	*p = PhueTime(t)
+	return nil
+}
+
+func main() {
+	// {
+	// 	fmt.Println(time.Parse("2006-01-02T15:04:05", "2018-12-14T19:31:33"))
+	// 	return
+	// }
 	c := NewClient(BridgeAddress, BridgeUsername)
 	lights, err := c.Lights()
 	if err != nil {
 		Fatal(err)
 	}
-	PrintJSON(lights)
+	for _, l := range lights {
+		if l.State.XY != nil {
+			XYToColor(float64(l.State.XY.X), float64(l.State.XY.Y))
+
+			// c := l.State.XY.RGB(l.State.Brightness)
+			// _ = c
+
+			// fmt.Printf("R: %d G: %d B: %d\n", c.R, c.G, c.B)
+			// fmt.Printf("\033[38;2;%d;%d;%dmCOLOR: %s\033[0m\n", c.R, c.G, c.B, l.Name)
+			// // printf "\x1b[38;2;255;100;0mTRUECOLOR\x1b[0m\n"
+			// // l.State.XY.RGB(l.State.Brightness)
+			// // colors = append(colors, )
+		}
+	}
+
+	// PrintJSON(colors)
 	return
 }
 
@@ -425,5 +623,14 @@ func (c *Client) debug(endpoint string) error {
 	}
 	fmt.Println(buf.String())
 	return nil
+}
+*/
+
+/*
+func unquote(b []byte) []byte {
+	if len(b) < 2 || b[0] != '"' || b[len(b)-1] != '"' {
+		return b
+	}
+	return b[1 : len(b)-1]
 }
 */
