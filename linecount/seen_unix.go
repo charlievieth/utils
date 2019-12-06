@@ -9,7 +9,7 @@ import (
 )
 
 type fileKey struct {
-	Dev int32
+	Dev uint64
 	Ino uint64
 }
 
@@ -28,7 +28,7 @@ func (s *SeenFiles) Seen(path string) bool {
 	}
 	stat := fi.Sys().(*syscall.Stat_t)
 	key := fileKey{
-		Dev: stat.Dev,
+		Dev: uint64(stat.Dev),
 		Ino: stat.Ino,
 	}
 	s.mu.Lock()
