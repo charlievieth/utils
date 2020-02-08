@@ -10,6 +10,20 @@ import (
 	"strings"
 )
 
+func GitBranch(wd string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = wd
+	b, err := cmd.CombinedOutput()
+	out := string(bytes.TrimSpace(b))
+	if err != nil {
+		if out == "" {
+			out = "no branch found"
+		}
+		return "", fmt.Errorf("git sha: %s: %s", err, out)
+	}
+	return out, nil
+}
+
 func GitSHA(wd string) (string, error) {
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = wd
@@ -143,11 +157,20 @@ func realMain() error {
 		if err != nil {
 			return err
 		}
+		branch, _ := GitBranch(wd)
 		repoPath := TrimPathPrefix(file.Path, dir)
 		if file.Info.IsDir() {
-			url = fmt.Sprintf("%s/tree/%s/%s", url, sha, repoPath)
+			if branch != "" {
+				url = fmt.Sprintf("%s/tree/%s/%s", url, branch, repoPath)
+			} else {
+				url = fmt.Sprintf("%s/tree/%s/%s", url, sha, repoPath)
+			}
 		} else {
-			url = fmt.Sprintf("%s/blob/%s/%s", url, sha, repoPath)
+			if branch != "" {
+				url = fmt.Sprintf("%s/blob/%s/%s", url, branch, repoPath)
+			} else {
+				url = fmt.Sprintf("%s/blob/%s/%s", url, sha, repoPath)
+			}
 		}
 		out, err := exec.Command("open", url).CombinedOutput()
 		if err != nil {
