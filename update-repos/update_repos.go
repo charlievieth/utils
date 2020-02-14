@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // remote:
@@ -125,10 +127,55 @@ func FetchReset(ctx context.Context, wd string) error {
 	return cmd.Err()
 }
 
+// TODO: rename
+type DefaultBranchError struct {
+	Remote, Current, Default string
+}
+
+func (e *DefaultBranchError) Error() string {
+	return fmt.Sprintf("%s: current branch %q is not the default branch %q",
+		e.Remote, e.Current, e.Default)
+}
+
+func IsDefaultBranchError(err error) bool {
+	_, ok := err.(*DefaultBranchError)
+	return err != nil && ok
+}
+
+func FetchResetSafe(ctx context.Context, wd string) error {
+	branch, err := GetCurrentBranch(wd)
+	if branch != "master" || err != nil {
+		remote, err := GitRemote(wd)
+		if err != nil {
+			return fmt.Errorf("%q: remote: %w", wd, err)
+		}
+		def, err := GitDefaultBranch(wd, remote)
+		if err != nil {
+			return fmt.Errorf("%q: getting default branch: %w", wd, err)
+		}
+		if def != branch {
+			return &DefaultBranchError{remote, branch, def}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("%q: getting default branch: %w", wd, err)
+	}
+	if branch == "" {
+		return fmt.Errorf("%q: empty default branch", wd)
+	}
+	cmd := NewCmdRunner(ctx, wd)
+	cmd.Git("remote", "set-branches", "origin", branch)
+	cmd.Git("fetch", "origin")
+	cmd.Git("checkout", branch)
+	cmd.Git("reset", "--hard", "origin/"+branch)
+	return cmd.Err()
+}
+
 func UpdateWorker(ctx context.Context, wg *sync.WaitGroup, repos chan string) {
 	defer wg.Done()
 	for repo := range repos {
-		if err := FetchReset(ctx, repo); err != nil {
+		fmt.Fprintf(os.Stderr, "# Updating: %s\n", filepath.Base(repo))
+		if err := FetchResetSafe(ctx, repo); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
 	}
@@ -139,8 +186,7 @@ func isDir(name string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func realMain() error {
-	const root = "/Users/cvieth/workspace/all-repos/lyft"
+func realMain(root string) error {
 	const numWorkers = 6
 
 	repoCh := make(chan string, numWorkers)
@@ -172,6 +218,7 @@ func realMain() error {
 
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
 		go UpdateWorker(ctx, &wg, repoCh)
 	}
 
@@ -195,10 +242,101 @@ func realMain() error {
 	return err
 }
 
+func realMainRandomWalk(root string) error {
+	const numWorkers = 6
+
+	var repos []string
+	repoCh := make(chan string, numWorkers)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		ch := make(chan os.Signal, 8)
+		signal.Notify(ch, os.Interrupt)
+		defer signal.Reset(os.Interrupt)
+		for {
+			select {
+			case sig := <-ch:
+				fmt.Fprintf(os.Stderr, "Signal %q: stopping\n", sig)
+				cancel()
+				for {
+					select {
+					case <-repoCh:
+					default:
+						return
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	start := time.Now()
+	err := filepath.Walk(root, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() && isDir(filepath.Join(path, ".git")) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				repos = append(repos, path)
+			}
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "# Found %d repos in %s\n", len(repos), time.Since(start))
+
+	rr := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rr.Shuffle(len(repos), func(i, j int) {
+		repos[i], repos[j] = repos[j], repos[i]
+	})
+
+	start = time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go UpdateWorker(ctx, &wg, repoCh)
+	}
+
+	updated := 0
+Loop:
+	for _, repo := range repos {
+		select {
+		case repoCh <- repo:
+			updated++
+		case <-ctx.Done():
+			fmt.Fprintf(os.Stderr, "Context canceled (%s): stopping\n", ctx.Err())
+			break Loop
+		}
+	}
+	fmt.Fprintln(os.Stderr, "# Waiting for workers to stop")
+	close(repoCh)
+	wg.Wait()
+
+	dur := time.Since(start)
+	fmt.Fprintf(os.Stderr, "# Updated %d repos in %s %s/repo\n",
+		updated, dur, dur/time.Duration(updated))
+	return ctx.Err()
+}
+
 func main() {
-	if err := realMain(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+	if len(os.Args) == 1 {
+		fmt.Fprintf(os.Stderr, "Usage: %s: DIRECTORY...\n", filepath.Base(os.Args[0]))
 		os.Exit(1)
+	}
+	for i := 1; i < len(os.Args); i++ {
+		root := os.Args[i]
+		if err := realMainRandomWalk(root); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 	}
 }
 
