@@ -547,13 +547,13 @@ func main() {
 	}
 	for _, l := range lights {
 		if l.State.XY != nil {
-			XYToColor(float64(l.State.XY.X), float64(l.State.XY.Y))
+			c := XYToColor(float64(l.State.XY.X), float64(l.State.XY.Y))
 
 			// c := l.State.XY.RGB(l.State.Brightness)
 			// _ = c
 
-			// fmt.Printf("R: %d G: %d B: %d\n", c.R, c.G, c.B)
-			// fmt.Printf("\033[38;2;%d;%d;%dmCOLOR: %s\033[0m\n", c.R, c.G, c.B, l.Name)
+			fmt.Printf("R: %d G: %d B: %d\n", c.R, c.G, c.B)
+			fmt.Printf("\033[38;2;%d;%d;%dmCOLOR: %s\033[0m\n", c.R, c.G, c.B, l.Name)
 			// // printf "\x1b[38;2;255;100;0mTRUECOLOR\x1b[0m\n"
 			// // l.State.XY.RGB(l.State.Brightness)
 			// // colors = append(colors, )
