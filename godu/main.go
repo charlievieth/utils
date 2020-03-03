@@ -4,10 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"text/tabwriter"
 
@@ -130,31 +132,80 @@ func walkPath(path string) (Size, error) {
 	})
 }
 
+func gateSize() int {
+	// TODO: consider using "/ 3" on darwin
+	n := runtime.NumCPU() / 2
+	// handle the fact that darwin has a garbage FS
+	if runtime.GOOS == "darwin" {
+		if n >= 12 {
+			n = 12
+		}
+	}
+	if n == 0 {
+		n = 2
+	}
+	return n
+}
+
 func walk(paths []string, flags uint) error {
-	var total Size
-	var sizes []FileSize
+	var (
+		walkErr error
+		total   Size
+		sizes   []FileSize
+		mu      sync.Mutex
+		wg      sync.WaitGroup
+	)
 	if flags&SortSize != 0 {
 		sizes = make([]FileSize, 0, len(paths))
 	}
+	stop := make(chan struct{})
+	gate := make(chan struct{}, gateSize()) // limit the number of parallel walks
+
 	wr := tabwriter.NewWriter(os.Stdout, 0, 0, 0, ' ', tabwriter.AlignRight)
+
+Loop:
 	for _, path := range paths {
-		size, err := walkPath(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s\n", err)
-			continue
+		select {
+		case gate <- struct{}{}:
+			// Ok
+		case <-stop:
+			break Loop
 		}
-		if flags&PrintBytes == 0 {
-			size = Size(RoundUp(int64(size)))
-		}
-		total += size
-		if flags&SortSize != 0 {
-			sizes = append(sizes, FileSize{size, path})
-			continue
-		}
-		if err := printSize(wr, path, size); err != nil {
-			return err // can't print pipe may be broken
-		}
+		wg.Add(1)
+		go func(path string) {
+			defer func() {
+				<-gate
+				wg.Done()
+			}()
+			size, err := walkPath(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %s\n", err)
+				return
+			}
+			if flags&PrintBytes == 0 {
+				size = Size(RoundUp(int64(size)))
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			total += size
+			if flags&SortSize != 0 {
+				sizes = append(sizes, FileSize{size, path})
+				return
+			}
+			if err := printSize(wr, path, size); err != nil {
+				if walkErr == nil {
+					walkErr = err
+					close(stop)
+				}
+			}
+		}(path)
 	}
+	wg.Wait()
+
+	if walkErr != nil {
+		return walkErr
+	}
+
 	if flags&SortSize != 0 {
 		if flags&SortNameCase != 0 {
 			sort.Sort(filesByNameCase(sizes))
