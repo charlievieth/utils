@@ -310,3 +310,65 @@ func main() {
 		os.Exit(2)
 	}
 }
+
+/*
+	errCh := make(chan error, 1)
+	stop := make(chan struct{})
+	gate := make(chan struct{}, gateSize()) // limit the number of parallel walks
+
+	wr := tabwriter.NewWriter(os.Stdout, 0, 0, 0, ' ', tabwriter.AlignRight)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, path := range paths {
+			select {
+			case gate <- struct{}{}:
+				wg.Add(1)
+				go func(path string) {
+					defer func() {
+						<-gate
+						wg.Done()
+					}()
+					size, err := walkPath(path)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error: %s\n", err)
+						return
+					}
+					if flags&PrintBytes == 0 {
+						size = Size(RoundUp(int64(size)))
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					total += size
+					if flags&SortSize != 0 {
+						sizes = append(sizes, FileSize{size, path})
+						return
+					}
+					if err := printSize(wr, path, size); err != nil {
+						// can't print pipe may be broken
+						select {
+						case errCh <- err:
+						default:
+						}
+					}
+				}(path)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	wgCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(wgCh)
+	}()
+	select {
+	case <-wgCh:
+		// Ok
+	case err := <-errCh:
+		close(stop)
+
+		return err
+	}
+*/
