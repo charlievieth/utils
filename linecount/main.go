@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"text/tabwriter"
 
@@ -18,49 +19,38 @@ import (
 	"github.com/charlievieth/pkgs/fastwalk"
 )
 
-var WellKnownFilenames = map[string]bool{
-	"Dockerfile":     true,
-	"Gemfile":        true,
-	"Makefile":       true,
-	"Podfile":        true,
-	"Rakefile":       true,
-	"CMakeLists.txt": true,
-
-	"LICENSE":      true,
-	"MANIFEST":     true,
-	"METADATA":     true,
-	"NOTICE":       true,
-	"AUTHORS":      true,
-	"CODEOWNERS":   true,
-	"CONTRIBUTORS": true,
-	"README":       true,
-	"PATENTS":      true,
-	"OWNERS":       true,
-
-	// bazel
-	"BUILD":     true,
-	"WORKSPACE": true,
+func WellKnownFilename(s string) bool {
+	switch s {
+	case "Dockerfile", "Gemfile", "Makefile", "Podfile", "Rakefile",
+		"CMakeLists.txt", "LICENSE", "MANIFEST", "METADATA", "NOTICE",
+		"AUTHORS", "CODEOWNERS", "CONTRIBUTORS", "README", "PATENTS",
+		"OWNERS", "BUILD", "WORKSPACE":
+		return true
+	}
+	return false
 }
 
-var IgnoredExtensions = map[string]bool{
-	".bz":   true,
-	".bzip": true,
-	".exe":  true,
-	".gz":   true,
-	".gzip": true,
-	".tar":  true,
-	".tbz":  true,
-	".tgz":  true,
-	".vdi":  true,
-	".xz":   true,
-	".zip":  true,
+func IgnoredExtension(ext string) bool {
+	switch ext {
+	case ".bz", ".bzip", ".exe", ".gz", ".gzip", ".tar", ".tbz", ".tgz",
+		".vdi", ".xz", ".zip":
+		return true
+	}
+	return false
 }
 
 func Ext(path string) string {
-	base := filepath.Base(path)
-	ext := filepath.Ext(base)
-	if ext == "" && WellKnownFilenames[base] {
-		ext = base
+	ext := filepath.Ext(path)
+	switch ext {
+	case "":
+		base := filepath.Base(path)
+		if WellKnownFilename(base) {
+			ext = base
+		}
+	case ".txt":
+		if strings.HasSuffix(path, "CMakeLists.txt") {
+			ext = "CMakeLists.txt"
+		}
 	}
 	return ext
 }
@@ -73,45 +63,41 @@ func ExecutableMode(m os.FileMode) bool {
 // Tested with 16 and 32k and 8k seems best
 const bufSize = 8 * 1024
 
-var bufPool sync.Pool
-
-func getBuf() []byte {
-	if v := bufPool.Get(); v != nil {
-		b := v.([]byte)
-		for i := range b {
-			b[i] = 0
-		}
-	}
-	return make([]byte, bufSize)
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, bufSize)
+		return &b
+	},
 }
 
 func isBinary(b []byte) bool {
-	// this works for Mach-O binaries - not sure about what else
-	n := 0
-	for i := 0; i < len(b) && i < 128; i++ {
-		c := b[i]
-		if c <= 0x08 || (0x0E <= c && c <= 0x1f) {
-			n++
-		}
+	if len(b) > 512 {
+		b = b[:512]
 	}
-	return n >= 64 || n >= len(b)/2
+	return bytes.IndexByte(b, 0) != -1
 }
 
 var ErrBinary = errors.New("binary file")
 
+var newLine = []byte{'\n'}
+
 func LineCount(filename string) (int64, error) {
 	f, err := os.Open(filename)
 	if err != nil {
-		return -1, err
+		return 0, err
 	}
-	buf := getBuf()
-	defer func() { f.Close(); bufPool.Put(buf) }()
+	p := bufPool.Get().(*[]byte)
+	defer func() {
+		f.Close()
+		bufPool.Put(p)
+	}()
+	buf := *p
 
 	nr, err := f.Read(buf)
 	if isBinary(buf[0:nr]) {
 		return 0, ErrBinary
 	}
-	lines := int64(bytes.Count(buf[0:nr], []byte{'\n'}))
+	lines := int64(bytes.Count(buf[0:nr], newLine))
 	if err != nil {
 		if err != io.EOF {
 			return 0, err
@@ -121,7 +107,7 @@ func LineCount(filename string) (int64, error) {
 
 	for {
 		nr, er := f.Read(buf)
-		lines += int64(bytes.Count(buf[0:nr], []byte{'\n'}))
+		lines += int64(bytes.Count(buf[0:nr], newLine))
 		if er != nil {
 			if er != io.EOF {
 				err = er
@@ -146,7 +132,7 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 			return nil
 		}
 		ext := Ext(path)
-		if IgnoredExtensions[ext] {
+		if IgnoredExtension(ext) {
 			return nil
 		}
 		lines, err := LineCount(path)
