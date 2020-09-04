@@ -7,6 +7,7 @@ package arand
 import (
 	"math/rand"
 	"sync"
+	"sync/atomic"
 )
 
 /*
@@ -184,8 +185,8 @@ var (
 
 type rngSource struct {
 	mu   sync.Mutex
-	tap  int           // index into vec
-	feed int           // index into vec
+	tap  int64         // index into vec
+	feed int64         // index into vec
 	vec  [rngLen]int64 // current feedback register
 }
 
@@ -244,22 +245,75 @@ func (rng *rngSource) Int63() int64 {
 
 // Uint64 returns a non-negative pseudo-random 64-bit integer as an uint64.
 func (rng *rngSource) Uint64() uint64 {
-	rng.mu.Lock()
-	rng.tap--
-	if rng.tap < 0 {
-		rng.tap += rngLen
+	tap := atomic.AddInt64(&rng.tap, -1)
+	for tap < 0 {
+		x := tap + rngLen
+		if atomic.CompareAndSwapInt64(&rng.tap, tap, x) {
+			tap = x
+			break
+		}
+		tap = atomic.AddInt64(&rng.tap, -1)
+	}
+	feed := atomic.AddInt64(&rng.feed, -1)
+	for feed < 0 {
+		x := feed + rngLen
+		if atomic.CompareAndSwapInt64(&rng.feed, feed, x) {
+			feed = x
+			break
+		}
+		feed = atomic.AddInt64(&rng.feed, -1)
 	}
 
-	rng.feed--
-	if rng.feed < 0 {
-		rng.feed += rngLen
-	}
+	// var tap int64
+	// for {
+	// 	// fmt.Println("HIT: tap")
+	// 	tap = atomic.AddInt64(&rng.tap, -1)
+	// 	if tap < 0 {
+	// 		x := tap + rngLen
+	// 		if !atomic.CompareAndSwapInt64(&rng.tap, tap, x) {
+	// 			continue
+	// 		}
+	// 		tap = x
+	// 	}
+	// 	break
+	// }
 
-	x := rng.vec[rng.feed] + rng.vec[rng.tap]
-	rng.vec[rng.feed] = x
+	// var feed int64
+	// for {
+	// 	// fmt.Println("HIT: feed")
+	// 	feed = atomic.AddInt64(&rng.feed, -1)
+	// 	if feed < 0 {
+	// 		x := feed + rngLen
+	// 		if atomic.CompareAndSwapInt64(&rng.feed, feed, x) {
+	// 			continue
+	// 		}
+	// 		feed = x
+	// 	}
+	// 	break
+	// }
+
+	// fmt.Println("HIT: done")
+	x := rng.vec[feed] + rng.vec[tap]
+	atomic.StoreInt64(&rng.vec[feed], x)
 	u := uint64(x)
-	rng.mu.Unlock()
 	return u
+
+	// rng.mu.Lock()
+	// rng.tap--
+	// if rng.tap < 0 {
+	// 	rng.tap += rngLen
+	// }
+
+	// rng.feed--
+	// if rng.feed < 0 {
+	// 	rng.feed += rngLen
+	// }
+
+	// x := rng.vec[rng.feed] + rng.vec[rng.tap]
+	// rng.vec[rng.feed] = x
+	// u := uint64(x)
+	// rng.mu.Unlock()
+	// return u
 }
 
 func NewSource(seed int64) rand.Source {
