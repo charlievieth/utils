@@ -115,13 +115,15 @@ func XYToColor(x, y float64) color.RGBA {
 }
 
 func (x XY) RGB(brightness uint8) color.RGBA {
+	const MaxBrightness = 254
+
 	// https://developers.meethue.com/develop/application-design-guidance/color-conversion-formulas-rgb-to-xy-and-back/
 	//
 	// Calculate XYZ values
 	xX := float64(x.X)
 	xY := float64(x.Y)
 	z := 1.0 - xX - xY
-	Y := float64(brightness) / 254.0
+	Y := float64(brightness) / MaxBrightness
 	fmt.Printf("X: %f Y: %f\n", x.X, x.Y)
 	fmt.Println("BRIGHTNESS:", Y, brightness)
 	Y = 0.75
@@ -162,7 +164,7 @@ func (x XY) RGB(brightness uint8) color.RGBA {
 		if f <= 0 {
 			f = 0
 		}
-		return uint8(f * 254.0)
+		return uint8(f * MaxBrightness)
 	}
 	return color.RGBA{
 		R: clamp(r),
