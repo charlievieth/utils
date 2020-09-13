@@ -54,6 +54,81 @@ func Walk(root string, walkFn func(path string, typ os.FileMode) error, errFn fu
 	return walkN(root, walkFn, errFn, numWorkers)
 }
 
+func WalkSize(root string, sizeFn func(fd int, dirname, basename string), errFn func(err error)) error {
+	// CEV: More than 10 workers and performance degrades.
+	numWorkers := 4
+	if n := runtime.NumCPU(); n > numWorkers {
+		//
+		if n > 16 {
+			numWorkers = 10
+		} else {
+			numWorkers = n
+		}
+	}
+	return walkSizeN(root, sizeFn, errFn, numWorkers)
+}
+
+func walkSizeN(root string, sizeFn func(fd int, dirname, basename string), errFn func(err error), numWorkers int) error {
+	w := &walker{
+		sizeFn:   sizeFn,
+		enqueuec: make(chan walkItem, numWorkers), // buffered for performance
+		workc:    make(chan walkItem, numWorkers), // buffered for performance
+		donec:    make(chan struct{}),
+
+		// buffered for correctness & not leaking goroutines:
+		resc: make(chan error, numWorkers),
+	}
+	defer close(w.donec)
+	// TODO(bradfitz): start the workers as needed? maybe not worth it.
+	for i := 0; i < numWorkers; i++ {
+		go w.doWorkSize()
+	}
+	todo := []walkItem{{dir: root}}
+	out := 0
+	// Loop:
+	for {
+		workc := w.workc
+		var workItem walkItem
+		if len(todo) == 0 {
+			workc = nil
+		} else {
+			workItem = todo[len(todo)-1]
+		}
+		select {
+		case workc <- workItem:
+			todo = todo[:len(todo)-1]
+			out++
+		case it := <-w.enqueuec:
+			todo = append(todo, it)
+		case err := <-w.resc:
+			out--
+			if err != nil {
+				if errFn != nil {
+					errFn(err)
+					err = nil
+					// continue Loop
+				} else {
+					return err
+				}
+			}
+			if out == 0 && len(todo) == 0 {
+				// It's safe to quit here, as long as the buffered
+				// enqueue channel isn't also readable, which might
+				// happen if the worker sends both another unit of
+				// work and its result before the other select was
+				// scheduled and both w.resc and w.enqueuec were
+				// readable.
+				select {
+				case it := <-w.enqueuec:
+					todo = append(todo, it)
+				default:
+					return nil
+				}
+			}
+		}
+	}
+}
+
 func walkN(root string, walkFn func(path string, typ os.FileMode) error, errFn func(err error), numWorkers int) error {
 	w := &walker{
 		fn:       walkFn,
@@ -128,8 +203,20 @@ func (w *walker) doWork() {
 	}
 }
 
+func (w *walker) doWorkSize() {
+	for {
+		select {
+		case <-w.donec:
+			return
+		case it := <-w.workc:
+			w.resc <- w.walkSize(it.dir)
+		}
+	}
+}
+
 type walker struct {
-	fn func(path string, typ os.FileMode) error
+	sizeFn func(fd int, dirname, basename string)
+	fn     func(path string, typ os.FileMode) error
 
 	donec    chan struct{} // closed on Walk's return
 	workc    chan walkItem // to workers
@@ -188,4 +275,19 @@ func (w *walker) walk(root string, runUserCallback bool) error {
 	}
 
 	return readDir(root, w.onDirEnt)
+}
+
+func (w *walker) onDirEntSize(dirName, baseName string, typ os.FileMode) error {
+	if len(baseName) != 0 {
+		// WARN: typ is always os.ModeDir right now
+		// TODO: support excluding files and handling symlinks
+		w.enqueue(walkItem{
+			dir: dirName + string(os.PathSeparator) + baseName,
+		})
+	}
+	return nil
+}
+
+func (w *walker) walkSize(root string) error {
+	return readDirSize(root, w.onDirEntSize, w.sizeFn)
 }

@@ -108,6 +108,12 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 	return nil
 }
 
+func (w *Walker) WalkSize(fd int, _, basename string) {
+	if n, _ := GetFileSizeAt(fd, basename, false); n != 0 {
+		atomic.AddInt64((*int64)(&w.Size), n)
+	}
+}
+
 func isDir(name string) bool {
 	fi, err := os.Stat(name)
 	return err == nil && fi.IsDir()
@@ -130,6 +136,22 @@ func walkPath(path string) (Size, error) {
 	return w.Size, fastwalk.Walk(path, w.Walk, func(err error) {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 	})
+}
+
+func ErrFunc(err error) {
+	fmt.Fprintln(os.Stderr, "error:", err)
+}
+
+func walkPathSize(path string) (Size, error) {
+	if !isDir(path) {
+		fi, err := os.Lstat(path)
+		if err != nil {
+			return 0, err
+		}
+		return Size(fi.Size()), nil
+	}
+	var w Walker
+	return w.Size, fastwalk.WalkSize(path, w.WalkSize, ErrFunc)
 }
 
 func gateSize() int {
@@ -177,7 +199,10 @@ Loop:
 				<-gate
 				wg.Done()
 			}()
-			size, err := walkPath(path)
+			// WARN WARN WARN
+			// WARN WARN WARN
+			// size, err := walkPath(path)
+			size, err := walkPathSize(path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %s\n", err)
 				return

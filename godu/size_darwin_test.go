@@ -10,25 +10,25 @@ import (
 )
 
 func BenchmarkGetFileSize_Fast(b *testing.B) {
-	if _, err := fastSize("main.go"); err != nil {
+	if _, err := fastSize("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go"); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			fastSize("main.go")
+			fastSize("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go")
 		}
 	})
 }
 
 func BenchmarkGetFileSize(b *testing.B) {
-	if _, err := GetFileSize("main.go"); err != nil {
+	if _, err := GetFileSize("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go"); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			GetFileSize("main.go")
+			GetFileSize("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go")
 		}
 	})
 }
@@ -43,43 +43,64 @@ func sizeSyscall(path string) (int64, error) {
 }
 
 func BenchmarkGetFileSize_Syscall(b *testing.B) {
-	if _, err := sizeSyscall("main.go"); err != nil {
+	b.Skip("TODO: remove")
+	if _, err := sizeSyscall("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go"); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			sizeSyscall("main.go")
+			sizeSyscall("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go")
 		}
 	})
 }
 
 func BenchmarkGetFileSize_OS(b *testing.B) {
-	if _, err := os.Lstat("main.go"); err != nil {
+	b.Skip("TODO: remove")
+	if _, err := os.Lstat("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go"); err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			os.Lstat("main.go")
+			os.Lstat("/Users/cvieth/go/src/github.com/charlievieth/utils/godu/size_darwin_test.go")
+		}
+	})
+}
+
+func BenchmarkGetFileSizeAt(b *testing.B) {
+	fd, err := syscall.Open("/Users/cvieth/go/src/github.com/charlievieth/utils/godu", 0, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			GetFileSizeAt(fd, "size_darwin_test.go", false)
 		}
 	})
 }
 
 func fastSize(path string) (int64, error) {
+	// WARN: use non 64 variant
 	const SYS_STAT64 = 338
 
-	a := make([]byte, len(path)+1)
-	copy(a, path)
-	p0 := &a[0]
-	// p0, err := syscall.BytePtrFromString(path)
-	// if err != nil {
-	// 	Fatal(err)
-	// }
+	p := bufPool.Get().(*[]byte)
+	b := *p
+	copy(b, path)
+	b[len(path)] = 0
+
 	var stat syscall.Stat_t
-	_, _, e1 := syscall.Syscall(SYS_STAT64, uintptr(unsafe.Pointer(p0)), uintptr(unsafe.Pointer(&stat)), 0)
+	_, _, e1 := syscall.Syscall(
+		SYS_STAT64,
+		uintptr(unsafe.Pointer(&b[0])),
+		uintptr(unsafe.Pointer(&stat)),
+		0,
+	)
+	bufPool.Put(p)
 	if e1 != 0 {
-		return 0, e1
+		return 0, os.NewSyscallError("stat64", e1)
 	}
 	return stat.Size, nil
 }

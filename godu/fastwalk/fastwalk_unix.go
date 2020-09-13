@@ -20,6 +20,72 @@ const blockSize = 8 << 10
 // value used to represent a syscall.DT_UNKNOWN Dirent.Type.
 const unknownFileMode os.FileMode = os.ModeNamedPipe | os.ModeSocket | os.ModeDevice
 
+func readDirSize(
+	dirName string,
+	dirFn func(dirName, entName string, typ os.FileMode) error,
+	sizeFn func(fd int, dirname, basename string),
+) (rerr error) {
+
+	fd, err := syscall.Open(dirName, 0, 0)
+	if err != nil {
+		return err
+	}
+
+	// The buffer must be at least a block long.
+	buf := make([]byte, blockSize) // stack-allocated; doesn't escape
+	bufp := 0                      // starting read position in buf
+	nbuf := 0                      // end valid data in buf
+	skipFiles := false             // skip fn() on regular files
+	for {
+		if bufp >= nbuf {
+			bufp = 0
+			nbuf, err = syscall.ReadDirent(fd, buf)
+			if err != nil {
+				rerr = os.NewSyscallError("readdirent", err)
+				break
+			}
+			if nbuf <= 0 {
+				break
+			}
+		}
+		consumed, name, typ := parseDirEnt(buf[bufp:nbuf], skipFiles)
+		bufp += consumed
+		if typ == modeSkip || name == "" || name == "." || name == ".." {
+			continue
+		}
+
+		// Fallback for filesystems (like old XFS) that don't
+		// support Dirent.Type and have DT_UNKNOWN (0) there
+		// instead.
+		if typ == unknownFileMode {
+			fi, err := os.Lstat(dirName + "/" + name)
+			if err != nil {
+				// It got deleted in the meantime.
+				if os.IsNotExist(err) {
+					continue
+				}
+				rerr = err
+				break
+			}
+			typ = fi.Mode() & os.ModeType
+		}
+
+		// WARN WARN WARN WARN WARN WARN
+		if typ == 0 {
+			sizeFn(fd, dirName, name)
+		} else if typ == os.ModeDir {
+			rerr = dirFn(dirName, name, typ)
+			if rerr != nil {
+				// TODO: support SkipFiles
+				break
+			}
+		}
+	}
+	syscall.Close(fd)
+
+	return
+}
+
 func readDir(dirName string, fn func(dirName, entName string, typ os.FileMode) error) (rerr error) {
 	fd, err := syscall.Open(dirName, 0, 0)
 	if err != nil {
