@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image/color"
 	"io"
+	"io/ioutil"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"sync"
 	"time"
 )
 
@@ -19,6 +23,7 @@ const BridgeAddress = "10.0.1.40"
 
 var BridgeUsername string
 
+// WARN: remove
 func init() {
 	BridgeUsername = os.Getenv("HUE_USERNAME")
 	if BridgeUsername == "" {
@@ -26,356 +31,17 @@ func init() {
 	}
 }
 
-type XY struct {
-	X float32 `json:"x"`
-	Y float32 `json:"y"`
-}
-
-func XYToColor(x, y float64) color.RGBA {
-	const Y = 1.0
-	z := 1.0 - x - y // TODO: move to Z
-	X := (Y / y) * x
-	Z := (Y / y) * z
-
-	// Convert to RGB using Wide RGB D65 conversion
-	r := X*1.656492 - Y*0.354851 - Z*0.255038
-	g := -X*0.707196 + Y*1.655397 + Z*0.036152
-	b := X*0.051713 - Y*0.121364 + Z*1.011530
-
-	switch {
-	case r > b && r > g && r > 1.0:
-		// red is too big
-		g /= r
-		b /= r
-		r = 1.0
-	case g > b && g > r && g > 1.0:
-		// green is too big
-		r /= g
-		b /= g
-		g = 1.0
-	case b > r && b > g && b > 1.0:
-		// blue is too big
-		r /= b
-		g /= b
-		b = 1.0
-	}
-
-	// TODO: make sure this is correct
-	//
-	// Apply reverse gamma correction
-	if r <= 0.0031308 {
-		r = 12.92 * r
-	} else {
-		r = (1.0+0.055)*math.Pow(r, (1.0/2.4)) - 0.055
-	}
-	if g <= 0.0031308 {
-		g = 12.92 * g
-	} else {
-		g = (1.0+0.055)*math.Pow(g, (1.0/2.4)) - 0.055
-	}
-	if b <= 0.0031308 {
-		b = 12.92 * b
-	} else {
-		b = (1.0+0.055)*math.Pow(b, (1.0/2.4)) - 0.055
-	}
-
-	switch {
-	case r > b && r > g:
-		// red is biggest
-		if r > 1.0 {
-			g /= r
-			b /= r
-			r = 1.0
-		}
-	case g > b && g > r:
-		// green is biggest
-		if g > 1.0 {
-			r /= g
-			b /= g
-			g = 1.0
-		}
-	case b > r && b > g:
-		// blue is biggest
-		if b > 1.0 {
-			r /= b
-			g /= b
-			b = 1.0
-		}
-	}
-
-	fmt.Println("R:", r, uint8(r*math.MaxUint8))
-	fmt.Println("G:", g, uint8(g*math.MaxUint8))
-	fmt.Println("B:", b, uint8(b*math.MaxUint8))
-
-	return color.RGBA{
-		R: uint8(r * math.MaxUint8),
-		G: uint8(g * math.MaxUint8),
-		B: uint8(b * math.MaxUint8),
-	}
-}
-
-func (x XY) RGB(brightness uint8) color.RGBA {
-	const MaxBrightness = 254
-
-	// https://developers.meethue.com/develop/application-design-guidance/color-conversion-formulas-rgb-to-xy-and-back/
-	//
-	// Calculate XYZ values
-	xX := float64(x.X)
-	xY := float64(x.Y)
-	z := 1.0 - xX - xY
-	Y := float64(brightness) / MaxBrightness
-	fmt.Printf("X: %f Y: %f\n", x.X, x.Y)
-	fmt.Println("BRIGHTNESS:", Y, brightness)
-	Y = 0.75
-	X := (Y / xY) * xX
-	Z := (Y / xY) * z
-
-	// Convert to RGB using Wide RGB D65 conversion
-	r := X*1.656492 - Y*0.354851 - Z*0.255038
-	g := -X*0.707196 + Y*1.655397 + Z*0.036152
-	b := X*0.051713 - Y*0.121364 + Z*1.011530
-
-	// WARN: something here is broken the follow code fails
-	// to bound R to 0..1
-	//
-	// Apply reverse gamma correction
-	if r <= 0.0031308 {
-		r = 12.92 * r
-	} else {
-		r = (1.0+0.055)*math.Pow(r, (1.0/2.4)) - 0.055
-	}
-	if g <= 0.0031308 {
-		g = 12.92 * g
-	} else {
-		g = (1.0+0.055)*math.Pow(g, (1.0/2.4)) - 0.055
-	}
-	if b <= 0.0031308 {
-		b = 12.92 * b
-	} else {
-		b = (1.0+0.055)*math.Pow(b, (1.0/2.4)) - 0.055
-	}
-	fmt.Printf("XY: R: %f G: %f B: %f\n", r, g, b)
-
-	// WARN: we should not need this!!!
-	clamp := func(f float64) uint8 {
-		if f >= 1 {
-			f = 1
-		}
-		if f <= 0 {
-			f = 0
-		}
-		return uint8(f * MaxBrightness)
-	}
-	return color.RGBA{
-		R: clamp(r),
-		G: clamp(g),
-		B: clamp(b),
-	}
-}
-
-func (x *XY) UnmarshalJSON(b []byte) error {
-	if string(b) == "null" {
-		return nil
-	}
-	var xy [2]float32
-	if err := json.Unmarshal(b, &xy); err != nil {
-		return err
-	}
-	*x = XY{X: xy[0], Y: xy[1]}
-	return nil
-}
-
-func (x XY) MarshalJSON() ([]byte, error) {
-	return json.Marshal([2]float32{x.X, x.Y})
-}
-
-type ColorGamutType string
-
-const (
-	ColorGamutLivingColors ColorGamutType = "A"
-	ColorGamutGeneration1  ColorGamutType = "B"
-	ColorGamutFull         ColorGamutType = "C"
-	ColorGamutOther        ColorGamutType = "other"
-)
-
-func (c ColorGamutType) String() string { return string(c) }
-
-func (c ColorGamutType) Type() string {
-	switch c {
-	case ColorGamutLivingColors:
-		return "Living colors & lightstrip v1 gamut"
-	case ColorGamutGeneration1:
-		return "Hue generation 1 gamut"
-	case ColorGamutFull:
-		return "Hue full colors gamut"
-	case ColorGamutOther:
-		return "Other/not properly defined gamuts"
-	default:
-		return "Invalid Color Gamut: " + string(c)
-	}
-}
-
-func (c *ColorGamutType) UnmarshalJSON(b []byte) error {
-	if string(b) == "null" {
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
-	switch ct := ColorGamutType(s); ct {
-	case ColorGamutLivingColors, ColorGamutGeneration1, ColorGamutFull:
-		*c = ct
-	default:
-		*c = ColorGamutOther
-	}
-	return nil
-}
-
-type ColorMode string
-
-const (
-	ColorModeHueSaturation ColorMode = "hs"
-	ColorModeXY            ColorMode = "xy"
-	ColorModeTemperature   ColorMode = "ct"
-	ColorModeOther         ColorMode = "other"
-)
-
-func (c ColorMode) String() string { return string(c) }
-
-func (c *ColorMode) UnmarshalJSON(b []byte) error {
-	if string(b) == "null" {
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
-	switch cm := ColorMode(s); cm {
-	case ColorModeHueSaturation, ColorModeXY, ColorModeTemperature:
-		*c = cm
-	default:
-		*c = ColorModeOther
-	}
-	return nil
-}
-
-type ColorGamut struct {
-	Red   XY `json:"red"`   // max X, max Y
-	Green XY `json:"green"` // max X, max Y
-	Blue  XY `json:"blue"`  // max X, max Y
-}
-
-func (c *ColorGamut) UnmarshalJSON(b []byte) error {
-	if string(b) == "null" {
-		return nil
-	}
-	var gamut [3][2]float32
-	if err := json.Unmarshal(b, &gamut); err != nil {
-		return err
-	}
-	*c = ColorGamut{
-		Red:   XY{X: gamut[0][0], Y: gamut[0][1]},
-		Green: XY{X: gamut[1][0], Y: gamut[1][1]},
-		Blue:  XY{X: gamut[2][0], Y: gamut[2][1]},
-	}
-	return nil
-}
-
-func (c ColorGamut) MarshalJSON() ([]byte, error) {
-	gamut := [3][2]float32{
-		0: {c.Red.X, c.Red.Y},
-		1: {c.Green.X, c.Green.Y},
-		2: {c.Blue.X, c.Blue.Y},
-	}
-	return json.Marshal(gamut)
-}
-
-type State struct {
-	On               bool      `json:"on"`
-	Reachable        bool      `json:"reachable"`
-	Brightness       uint8     `json:"bri"`
-	Saturation       *uint8    `json:"sat,omitempty"`
-	Hue              *uint16   `json:"hue,omitempty"`
-	ColorTemperature uint16    `json:"ct"`
-	Alert            string    `json:"alert"`
-	Effect           string    `json:"effect,omitempty"`
-	ColorMode        ColorMode `json:"colormode"`
-	XY               *XY       `json:"xy,omitempty"`
-}
-
-type SoftwareUpdate struct {
-	LastInstall PhueTime `json:"lastinstall"`
-	State       string   `json:"state"`
-}
-
-type Streaming struct {
-	Renderer bool `json:"renderer"`
-	Proxy    bool `json:"proxy"`
-}
-
-type MinMax struct {
-	Min int `json:"min"`
-	Max int `json:"max"`
-}
-
-type Control struct {
-	MinDimLevel      int             `json:"mindimlevel"`
-	MaxLumen         int             `json:"maxlumen"`
-	ColorTemperature MinMax          `json:"ct"`
-	ColorGamutType   *ColorGamutType `json:"colorgamuttype,omitempty"`
-	ColorGamut       *ColorGamut     `json:"colorgamut,omitempty"`
-}
-
-type Capabilities struct {
-	Certified bool      `json:"certified"`
-	Control   Control   `json:"control"`
-	Streaming Streaming `json:"streaming"`
-}
-
-// TODO: might wanna add "omitempty" tag
-type Light struct {
-	Type              string         `json:"type"`
-	Name              string         `json:"name"`
-	ProductName       string         `json:"productname"`
-	ManufacturerName  string         `json:"manufacturername"`
-	ModelID           string         `json:"modelid"`
-	UniqueID          string         `json:"uniqueid"`
-	LuminaireUniqueID string         `json:"luminaireuniqueid"`
-	SoftwareVersion   string         `json:"swversion"`
-	Streaming         Streaming      `json:"streaming"`
-	Capabilities      Capabilities   `json:"capabilities"`
-	Config            LightConfig    `json:"config"`
-	State             State          `json:"state"`
-	SoftwareUpdate    SoftwareUpdate `json:"swupdate"`
-}
-
-type LightConfig struct {
-	ArcheType string `json:"archetype"`
-	Function  string `json:"function"`
-	Direction string `json:"direction"`
-}
-
-type Lights map[string]Light
-
-type Group struct {
-	Name   string   `json:"name"`
-	Lights []string `json:"lights"`
-	Type   string   `json:"type"`
-	State  State    `json:"state"`
-}
-
-type statusCodeError struct {
+type StatusCodeError struct {
 	Code int
 	URL  string
 }
 
-func (t *statusCodeError) Error() string {
+func (t *StatusCodeError) Error() string {
 	return fmt.Sprintf("HUE server error (%s): %d - %s", t.URL, t.Code,
 		http.StatusText(t.Code))
 }
 
-func (t *statusCodeError) HTTPStatusCode() int {
+func (t *StatusCodeError) HTTPStatusCode() int {
 	return t.Code
 }
 
@@ -386,13 +52,53 @@ type Client struct {
 	limit    *RateLimit
 }
 
-func NewClient(address, username string) *Client {
-	return &Client{
+type Option interface {
+	apply(c *Client)
+}
+
+type optRateLimit struct {
+	interval time.Duration
+}
+
+func (o *optRateLimit) apply(c *Client) {
+	c.limit = NewRateLimit(o.interval)
+}
+
+func WithRateLimit(interval time.Duration) Option {
+	return &optRateLimit{interval}
+}
+
+type optClient struct {
+	client *http.Client
+}
+
+func (o *optClient) apply(c *Client) {
+	c.client = o.client
+}
+
+func WithClient(c *http.Client) Option {
+	return nil
+}
+
+func (c *Client) initDefaults() {
+	if c.client == nil {
+		c.client = &http.Client{Timeout: time.Second * 3}
+	}
+	if c.limit == nil {
+		c.limit = NewRateLimit(time.Second / 25)
+	}
+}
+
+func NewClient(address, username string, opts ...Option) *Client {
+	c := &Client{
 		Address:  address,
 		Username: username,
-		client:   &http.Client{Timeout: time.Second * 3},
-		limit:    NewRateLimit(time.Second / 25),
 	}
+	for _, o := range opts {
+		o.apply(c)
+	}
+	c.initDefaults()
+	return c
 }
 
 /*
@@ -422,15 +128,15 @@ func (h RequestError) Error() string {
 		h.Type, h.Address, h.Description)
 }
 
-func (c *Client) decode(res *http.Response, dst interface{}) error {
-	var buf bytes.Buffer
-	buf.Grow(bytes.MinRead)
-	if _, err := buf.ReadFrom(res.Body); err != nil {
+func (c *Client) decodeGet(res *http.Response, dst interface{}) error {
+	b, err := ioutil.ReadAll(res.Body)
+	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(buf.Bytes(), dst); err != nil {
+	if err := json.Unmarshal(b, dst); err != nil {
+		// TODO: do we actually need this???
 		var herr []internalRequestError
-		if e := json.Unmarshal(buf.Bytes(), &herr); e == nil && len(herr) != 0 {
+		if e := json.Unmarshal(b, &herr); e == nil && len(herr) != 0 {
 			return herr[0].Error
 		}
 		return err
@@ -439,41 +145,126 @@ func (c *Client) decode(res *http.Response, dst interface{}) error {
 }
 
 func (c *Client) url(endpoint string) string {
-	return "http://" + c.Address + "/api/" + c.Username + "/" + endpoint
+	u := url.URL{
+		Scheme: "http",
+		Host:   c.Address,
+		Path:   path.Join("api", c.Username, endpoint),
+	}
+	return u.String()
 }
 
-func (c *Client) do(method, endpoint string, body io.Reader) (*http.Response, error) {
+func (c *Client) Do(method, endpoint string, body io.Reader) (*http.Response, error) {
 	url := c.url(endpoint)
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
+
 	c.limit.Wait()
 	res, err := c.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, &statusCodeError{res.StatusCode, url}
+		return nil, &StatusCodeError{res.StatusCode, url}
 	}
 	return res, nil
 }
 
-func (c *Client) get(endpoint string, v interface{}) error {
-	res, err := c.do("GET", "lights", nil)
+func closeResponse(res *http.Response) {
+	io.Copy(ioutil.Discard, res.Body)
+	res.Body.Close()
+}
+
+func (c *Client) Get(endpoint string, v interface{}) error {
+	res, err := c.Do("GET", endpoint, nil)
 	if err != nil {
 		return err
 	}
-	return c.decode(res, v)
+	defer closeResponse(res)
+	return c.decodeGet(res, v)
 }
 
-func (c *Client) Lights() (Lights, error) {
-	var lights Lights
-	return lights, c.get("lights", &lights)
+func (c *Client) Put(endpoint string, request, response interface{}) error {
+	var body io.Reader
+	if request != nil {
+		b, err := json.Marshal(request)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+	}
+	res, err := c.Do("PUT", endpoint, body)
+	if err != nil {
+		return err
+	}
+	defer closeResponse(res)
+
+	if response != nil {
+		data, err := ioutil.ReadAll(res.Body)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(data, &response); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
+func (c *Client) GetGroups() ([]Group, error) {
+	var m map[string]Group
+	if err := c.Get("groups", &m); err != nil {
+		return nil, err
+	}
+
+	groups := make([]Group, 0, len(m))
+	for id, g := range m {
+		n, err := strconv.Atoi(id)
+		if err != nil {
+			return nil, err
+		}
+		g.ID = n
+		groups = append(groups, g)
+	}
+	return groups, nil
+}
+
+func (c *Client) UpdateLight(id int, state *LightStateRequest) (*Light, error) {
+	panic("IMPLEMENT")
+}
+
+func (c *Client) GetLight(id int) (*Light, error) {
+	var light Light
+	if err := c.Get("light", &light); err != nil {
+		return nil, err
+	}
+	light.ID = id
+	return &light, nil
+}
+
+func (c *Client) GetLights() ([]Light, error) {
+	var m map[string]Light
+	if err := c.Get("lights", &m); err != nil {
+		return nil, err
+	}
+
+	lights := make([]Light, 0, len(m))
+	for id, l := range m {
+		n, err := strconv.Atoi(id)
+		if err != nil {
+			return nil, err
+		}
+		l.ID = n
+		lights = append(lights, l)
+	}
+	return lights, nil
+}
+
+/*
 func (c *Client) UpdateLights(fn func(id string, light Light) error) error {
-	lights, err := c.Lights()
+	lights, err := c.GetLights()
 	if err != nil {
 		return err
 	}
@@ -485,8 +276,10 @@ func (c *Client) UpdateLights(fn func(id string, light Light) error) error {
 	// TODO: update
 	return nil
 }
+*/
 
 type RateLimit struct {
+	mu   sync.Mutex
 	d    time.Duration
 	last time.Time
 }
@@ -496,24 +289,30 @@ func NewRateLimit(d time.Duration) *RateLimit {
 }
 
 func (r *RateLimit) Wait() {
-	const MinWait = time.Millisecond
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+
 	now := time.Now()
 	d := r.d - now.Sub(r.last)
-	if MinWait < d && d < r.d {
+	if time.Millisecond < d && d < r.d {
 		time.Sleep(d)
 		now = time.Now()
 	}
 	r.last = now
+
+	r.mu.Unlock()
 	return
 }
 
 const PhueTimeFormat = "2006-01-02T15:04:05"
 
-type PhueTime time.Time
+type PhueTime time.Time // TODO: rename to Time
 
 func (p PhueTime) Time() time.Time { return time.Time(p) }
 
-func (p *PhueTime) MarshalJSON() ([]byte, error) {
+func (p PhueTime) MarshalJSON() ([]byte, error) {
 	t := p.Time()
 	if y := t.Year(); y < 0 || y >= 10000 {
 		return nil, errors.New("PhueTime.MarshalJSON: year outside of range [0,9999]")
@@ -538,12 +337,32 @@ func (p *PhueTime) UnmarshalJSON(data []byte) error {
 }
 
 func main() {
+	{
+		fmt.Println("MaxInt8:", math.MaxInt8)
+		fmt.Println("MinInt8:", math.MinInt8)
+		fmt.Println("MaxInt16:", math.MaxInt16)
+		fmt.Println("MinInt16:", math.MinInt16)
+		fmt.Println("MaxInt32:", math.MaxInt32)
+		fmt.Println("MinInt32:", math.MinInt32)
+		fmt.Println("MaxInt64:", math.MaxInt64)
+		fmt.Println("MinInt64:", math.MinInt64)
+		fmt.Println("MaxUint8:", math.MaxUint8)
+		fmt.Println("MaxUint16:", math.MaxUint16)
+		fmt.Println("MaxUint32:", math.MaxUint32)
+		// fmt.Println("MaxUint64:", math.MaxUint64)
+		return
+		// on := true
+		// r := &GroupStateRequest{
+		// 	On: &on,
+		// }
+	}
+
 	// {
 	// 	fmt.Println(time.Parse("2006-01-02T15:04:05", "2018-12-14T19:31:33"))
 	// 	return
 	// }
 	c := NewClient(BridgeAddress, BridgeUsername)
-	lights, err := c.Lights()
+	lights, err := c.GetLights()
 	if err != nil {
 		Fatal(err)
 	}
