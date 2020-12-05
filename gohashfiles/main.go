@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -13,15 +15,12 @@ import (
 	"sort"
 	"sync"
 	"text/tabwriter"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type FileHash struct {
 	Name, Hash string
-}
-
-type FileSet struct {
-	Hash  string
-	Names []string
 }
 
 type FileList struct {
@@ -69,17 +68,49 @@ func (w *Worker) HashFile(name string) error {
 	return nil
 }
 
+const DropFileTableStmt = `CREATE TABLE IF EXISTS files;`
+
+const CreateFileTableStmt = `CREATE TABLE IF NOT EXISTS files (
+    id          INTEGER PRIMARY KEY,
+    path        TEXT NOT NULL,
+    basename    TEXT NOT NULL,
+    hash        TEXT NOT NULL
+);`
+
+const InsertFileStmt = `
+INSERT INTO files (
+	path,
+	basename,
+	hash
+) VALUES (?, ?, ?);
+`
+
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s: PATHs...\n",
 			filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
+	hashDB := flag.Bool("db", false, "write hashes to a sqlite database")
+	hashDBName := flag.String("db-name", "hashes.sqlite", "name of hash database")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "error: missing PATH")
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	var db *sql.DB
+	if *hashDB {
+		var err error
+		db, err = sql.Open("sqlite3", *hashDBName)
+		if err != nil {
+			Fatal(err)
+		}
+		db.Exec(DropFileTableStmt) // no error check
+		if _, err := db.Exec(CreateFileTableStmt); err != nil {
+			Fatal(err)
+		}
 	}
 
 	numCPU := runtime.NumCPU()
@@ -122,6 +153,28 @@ func main() {
 	}
 	close(workCh)
 	wg.Wait()
+
+	if db != nil {
+		tx, err := db.BeginTx(context.TODO(), nil)
+		if err != nil {
+			Fatal(err)
+		}
+		stmt, err := tx.Prepare(InsertFileStmt)
+		if err != nil {
+			Fatal(err)
+		}
+		for _, f := range list.Files() {
+			_, err := stmt.Exec(f.Name, filepath.Base(f.Name), f.Hash)
+			if err != nil {
+				tx.Rollback()
+				Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			Fatal(err)
+		}
+		return
+	}
 
 	m := make(map[string][]string, len(list.Files()))
 	for _, h := range list.Files() {
