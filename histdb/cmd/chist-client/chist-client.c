@@ -58,19 +58,39 @@ void __attribute__((__noinline__)) chist_log_impl(
 
 // TODO: log to file
 void chist_log_impl(const char *file, int line, const char *level, const char *format, ...) {
-	char buf[32];
-	if (chist_timestamp(buf, sizeof(buf)) <= 0) {
-		strcpy(buf, "TIMESTAMP_ERROR");
+	char *bufp = NULL;
+	size_t sizep;
+	FILE *mstream = open_memstream(&bufp, &sizep);
+	assert(mstream);
+	if (!mstream) {
+		return;
 	}
 
+	char ts[32];
+	if (chist_timestamp(ts, sizeof(ts)) <= 0) {
+		strcpy(ts, "TIMESTAMP_ERROR");
+	}
 	if (level == NULL) {
 		level = "INFO";
 	}
-	fprintf(stderr, "%s\t%s\t%s:%d\t", buf, level, file, line);
+	fprintf(mstream, "%s\t%s\t%s:%d\t", ts, level, file, line);
+
 	va_list args;
 	va_start(args, format);
-	vfprintf(stderr, format, args);
+	vfprintf(mstream, format, args);
 	va_end(args);
+
+	assert(fflush(mstream) == 0);
+	if (sizep > 0 && bufp[sizep - 1] != '\n') {
+		fputc('\n', mstream);
+	}
+	assert(fclose(mstream) == 0);
+
+	fwrite(bufp, 1, sizep, stderr);
+
+	if (bufp) {
+		free(bufp);
+	}
 }
 
 #define chist_fatal(format, ...)                                             \
