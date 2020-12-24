@@ -1,4 +1,4 @@
-CC=fake-gcc
+# CC=fake-gcc
 # Debug (-g creates the *.dSYM directory)
 #
 # CFLAGS=-O2 -std=c11 -g -flto
@@ -20,6 +20,14 @@ CFLAGS+=-Wno-gnu-zero-variadic-macro-arguments
 #
 # CFLAGS+=-Winline -Wdisabled-optimization
 #
+# Memory sanitizer:
+#
+# CFLAGS+=-fsanitize=address
+#
+# UB sanitizer:
+#
+# CFLAGS+=-fsanitize=undefined
+#
 # Race detector:
 #
 # CFLAGS+=-fsanitize=thread
@@ -32,6 +40,10 @@ RM=rm -rfv
 
 .PHONY: all
 all: clean build
+
+.PHONY: address
+address: CFLAGS+=-fsanitize=address
+address: run
 
 .PHONY: race
 race: CFLAGS+=-fsanitize=thread
