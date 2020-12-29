@@ -3,7 +3,11 @@
 #include <stdio.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <strings.h>
+#include <ctype.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <getopt.h>
@@ -13,12 +17,63 @@
 #include <unistd.h>
 #include <pwd.h>
 
-#include <curl/curl.h>
-
 // TODO:
-// 	1. Use getpwnam() and getppid() instead of relying on the shell to do this
+// 	1. Remove unused include stmts
+
+static struct option longopts[] = {
+	{"debug", no_argument, NULL, 'd'},
+	{"help", no_argument, NULL, 'h'},
+	{"session", required_argument, NULL, 0},
+	{"status-code", required_argument, NULL, 0},
+	{NULL, 0, NULL, 0},                // zero pad end
+};
+
+enum log_level_t {
+	LOG_LEVEL_DEBUG,
+	LOG_LEVEL_INFO,
+	LOG_LEVEL_WARN,
+	LOG_LEVEL_ERROR,
+	LOG_LEVEL_FATAL
+};
+
+static enum log_level_t log_level = LOG_LEVEL_ERROR;
+
+const char * chist_log_lvl_str(enum log_level_t lvl) {
+	switch (lvl) {
+	case LOG_LEVEL_DEBUG:
+		return "DEBUG";
+	case LOG_LEVEL_INFO:
+		return "INFO";
+	case LOG_LEVEL_WARN:
+		return "WARN";
+	case LOG_LEVEL_ERROR:
+		return "ERROR";
+	case LOG_LEVEL_FATAL:
+		return "FATAL";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+static void usage(FILE *stream) {
+	if (!stream) {
+		stream = stderr;
+	}
+	const char *name = "chist-client";
+	fprintf(stream,
+		"Usage %s: [OPTION]... [HISTORY_ID] [COMMAND] [ARGS]...\n"
+		"\nRequired options:\n"
+		"  -d, --debug\tprint debug information\n"
+		"  -c, --status-code\tcommand status/exit code\n"
+		"  -s, --session\tterminal session id\n",
+		name);
+}
 
 static int chist_timestamp(char *buffer, size_t bufsz) {
+	if (!buffer) {
+		return -1;
+	}
+
 	struct timeval tv;
 	if (gettimeofday(&tv, NULL) != 0) {
 		perror("gettimeofday");
@@ -48,16 +103,17 @@ static int chist_timestamp(char *buffer, size_t bufsz) {
 	return n1 + n2;
 }
 
-void __attribute__((__noinline__)) chist_log_impl(
+// CEV: forward declaration
+static void __attribute__((__noinline__)) chist_log_impl(
 	const char *file,
 	int line,
-	const char *level,
+	enum log_level_t lvl,
 	const char *format,
 	...
 ) __attribute__((__format__(__printf__, 4, 5)));
 
 // TODO: log to file
-void chist_log_impl(const char *file, int line, const char *level, const char *format, ...) {
+static void chist_log_impl(const char *file, int line, enum log_level_t lvl, const char *format, ...) {
 	char *bufp = NULL;
 	size_t sizep;
 	FILE *mstream = open_memstream(&bufp, &sizep);
@@ -70,9 +126,7 @@ void chist_log_impl(const char *file, int line, const char *level, const char *f
 	if (chist_timestamp(ts, sizeof(ts)) <= 0) {
 		strcpy(ts, "TIMESTAMP_ERROR");
 	}
-	if (level == NULL) {
-		level = "INFO";
-	}
+	const char *level = chist_log_lvl_str(lvl);
 	fprintf(mstream, "%s\t%s\t%s:%d\t", ts, level, file, line);
 
 	va_list args;
@@ -93,48 +147,56 @@ void chist_log_impl(const char *file, int line, const char *level, const char *f
 	}
 }
 
-#define chist_fatal(format, ...)                                             \
-	do {                                                                     \
-		chist_log_impl(__FILE__, __LINE__, "FATAL", format,  ##__VA_ARGS__); \
-		exit(EXIT_FAILURE);                                                  \
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
+#define chist_log(level, format, ...)                                          \
+	do {                                                                       \
+		if (unlikely(level >= log_level)) {                                    \
+			chist_log_impl(__FILE__, __LINE__, level, format,  ##__VA_ARGS__); \
+		}                                                                      \
+	} while (0);
+
+// TODO: remove unused macros
+#define chist_debug(format, ...)  chist_log(LOG_LEVEL_DEBUG, format,  ##__VA_ARGS__)
+#define chist_warn(format, ...)  chist_log(LOG_LEVEL_WARN, format,  ##__VA_ARGS__)
+#define chist_error(format, ...) chist_log(LOG_LEVEL_ERROR, format,  ##__VA_ARGS__)
+
+#define chist_fatal(format, ...)                            \
+	do {                                                    \
+		chist_log(LOG_LEVEL_FATAL, format,  ##__VA_ARGS__); \
+		exit(EXIT_FAILURE);                                 \
 	} while (0)
 
-#define chist_log(format, ...)                                              \
-	do {                                                                    \
-		chist_log_impl(__FILE__, __LINE__, "INFO", format,  ##__VA_ARGS__); \
-	} while (0)
-
-char *current_user() {
+// TODO: don't allocate here!!!
+static char *current_user() {
 	errno = 0;
 	struct passwd *pw = getpwuid(getuid());
 	assert(pw);
 	return pw ? strndup(pw->pw_name, 512) : NULL;
 }
 
-void usage() {
-	const char *name = "chist-client";
-	fprintf(stderr,
-		"Usage %s: [OPTION]... [HISTORY_ID] [COMMAND] [ARGS]...\n"
-		"\nRequired options:\n"
-		"  -s, --session\tterminal session id\n"
-		"  -c, --status-code\tcommand status/exit code\n",
-		name);
+static long long parse_int_arg(const char *s, const char *arg_name) {
+	char *endp;
+	long long n = strtoll(s, &endp, 10);
+	if ((n == 0 && errno != 0) || *endp) {
+		const char *msg;
+		if (errno != 0) {
+			msg = strerror(errno);
+		} else if (*endp) {
+			msg = "invalid integer";
+		} else {
+			msg = "unknown error";
+		}
+		chist_fatal("error: parsing '%s' argument (%s): %s\n", arg_name, s, msg);
+		assert(0);
+		exit(EXIT_FAILURE); // unreachable
+	}
+	return n;
 }
 
-// TODO: remove if not used
-struct memory_buffer {
-	char   *data;
-	size_t size;
-};
-
 int main(int argc, char *argv[]) {
-	struct option longopts[] = {
-		// {"user", required_argument, NULL, 'u'},
-		{"session", required_argument, NULL, 's'},
-		// {"ppid", required_argument, NULL, 'p'},
-		{"status-code", required_argument, NULL, 'c'},
-		{NULL, 0, NULL, 0},                // zero pad end
-	};
+	// WARN
+	const char * const server_socket = "/Users/cvieth/.local/share/histdb/socket/sock.sock";
 
 	char *user = current_user();
 	if (user == NULL) {
@@ -143,63 +205,59 @@ int main(int argc, char *argv[]) {
 	pid_t ppid = getppid();
 
 	char *session = NULL;
-	long status = 0;
+	bool status_set = false;
+	long long status;
+
+	// TODO: use this message for opt errors
+	// 	gzip: unrecognized option '--foobar'
 
 	int ch;
 	int opt_index = 0;
-	while ((ch = getopt_long(argc, argv, "d", longopts, &opt_index)) != -1) {
+	while ((ch = getopt_long(argc, argv, "dhs:c:", longopts, &opt_index)) != -1) {
 		switch (ch) {
-		// case 'u':
-		// 	user = strndup(optarg, 512);
-		// 	break;
+		case 'd':
+			// TODO: add debug info using log + log level
+			log_level = LOG_LEVEL_DEBUG;
+			break;
+		case 'h':
+			usage(stdout);
+			return 0;
 		case 's':
+			if (!optarg) {
+				chist_fatal("error: missing 'session' argument: %s", longopts[opt_index].name);
+			}
 			session = strndup(optarg, 512);
 			break;
-		// case 'p':
-		// 	ppid = strtol(optarg, (char **)NULL, 10);
-		// 	if (ppid <= 0) {
-		// 		if (errno) {
-		// 			chist_fatal("error: parsing 'ppid' argument: %s\n", strerror(errno));
-		// 		}
-		// 		chist_fatal("error: non-positive 'ppid' argument: %li\n", ppid);
-		// 	}
-		// 	break;
 		case 'c':
-			status = strtol(optarg, (char **)NULL, 10);
-			if (status == 0 && errno != 0) {
-				chist_fatal("error: parsing 'status' argument: %s\n", strerror(errno));
+			if (!optarg) {
+				chist_fatal("error: missing 'status-code' argument");
 			}
-			if (status < 0) {
-				chist_fatal("error: non-positive 'status' argument: %li\n", status);
-			}
+			status = parse_int_arg(optarg, "status-code");
+			status_set = true;
 			break;
 		default:
-			chist_fatal("error: invalid argument: %c\n", ch);
+			chist_fatal("error: invalid argument: %s\n", argv[optind - 1]);
 		}
 	}
 	argc -= optind;
 	argv += optind;
 
-	// if (user == NULL) {
-	// 	chist_fatal("error: missing required argument: USER\n");
-	// }
 	if (session == NULL) {
-		chist_fatal("error: missing required argument: SESSION\n");
+		chist_fatal("error: missing required argument: 'session'\n");
+	}
+	if (!status_set) {
+		chist_fatal("error: missing required argument: 'status-code'\n");
 	}
 	if (argc < 1) {
 		chist_fatal("error: missing COMMAND\n");
 	}
 
-	long long history_id = strtoll(argv[0], (char **)NULL, 10);
-	if (history_id <= 0) {
-		if (errno) {
-			chist_fatal("error: parsing 'history_id' argument: %s\n", strerror(errno));
-		}
-		chist_fatal("error: non-positive 'history_id' argument: %lli\n", history_id);
-	}
-
+	long long history_id = parse_int_arg(argv[0], "history_id");
 	argc -= 1;
 	argv += 1;
+
+	chist_debug("options: session: '%s' status_code: '%lli' history_id: '%lli'",
+		session, status, history_id);
 
 	json_t *obj = json_object();
 	if (!obj) {
@@ -235,7 +293,34 @@ int main(int argc, char *argv[]) {
 	if (!request_data) {
 		chist_fatal("json_dumps failed");
 	}
-	FILE *request_file = fmemopen(request_data, strlen(request_data), "r");
+	chist_debug("request_data: %s", request_data);
+
+	int sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (sockfd == -1) {
+		chist_fatal("WAT");
+	}
+
+	struct sockaddr_un addr;
+	addr.sun_family = AF_UNIX;
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", server_socket);
+
+	if (connect(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_un)) < 0) {
+		chist_fatal("error: connecting to socket: %s", strerror(errno));
+	}
+
+	if (write(sockfd, request_data, strlen(request_data)) < 0) {
+		close(sockfd);
+		chist_fatal("error: writing to socket: %s", strerror(errno));
+	}
+	close(sockfd);
+	free(request_data);
+
+	return 0;
+}
+
+// CURL
+/*
+	FILE *request_file = fmemopen(request_data, strlen(request_data) + 1, "rb");
 	if (!request_file) {
 		chist_fatal("fmemopen: %s\n", strerror(errno));
 	}
@@ -247,9 +332,6 @@ int main(int argc, char *argv[]) {
 	if (!curl_handle) {
 		chist_fatal("failed to initialize curl session\n");
 	}
-
-	// WARN
-	const char * const server_socket = "/Users/cvieth/.local/share/histdb/socket/sock.sock";
 
 	// WARN
 	#define setopt(handle, opt, value)                                                     \
@@ -264,9 +346,14 @@ int main(int argc, char *argv[]) {
 	setopt(curl_handle, CURLOPT_URL, "http://unix/reflect");
 	setopt(curl_handle, CURLOPT_READDATA, (void *)request_file);
 
+	CURLcode res = curl_easy_perform(curl_handle);
+	if (res != CURLM_OK) {
+		chist_fatal("error: curl: %s", curl_easy_strerror(res));
+	}
+	curl_easy_cleanup(curl_handle);
+
 	// FILE *response_file = open_memstream(char **__bufp, size_t *__sizep)
 
 	printf("DONE!\n");
 	return 0;
-}
-
+*/
