@@ -17,6 +17,8 @@
 #include <unistd.h>
 #include <pwd.h>
 
+#include <sys/param.h> // MAXPATHLEN
+
 // TODO:
 // 	1. Remove unused include stmts
 
@@ -167,13 +169,32 @@ static void chist_log_impl(const char *file, int line, enum log_level_t lvl, con
 		exit(EXIT_FAILURE);                                 \
 	} while (0)
 
+static char _chist_username[1024];
+
 // TODO: don't allocate here!!!
-static char *current_user() {
+static const char *get_current_user() {
 	errno = 0;
 	struct passwd *pw = getpwuid(getuid());
-	assert(pw);
-	return pw ? strndup(pw->pw_name, 512) : NULL;
+	assert(pw && pw->pw_name);
+	if (pw && pw->pw_name) {
+		return strncpy(_chist_username, pw->pw_name, sizeof(_chist_username));
+	}
+	chist_warn("getpwuid failed: %s", strerror(errno));
+	return "UNKNOWN";
 }
+
+static char _chist_wd[4096];
+
+static const char *get_working_directory() {
+	const char *cwd = getcwd(_chist_wd, sizeof(_chist_wd));
+	assert(cwd);
+	if (cwd) {
+		return cwd;
+	}
+	chist_warn("getcwd failed: %s", strerror(errno));
+	return "UNKNOWN";
+}
+
 
 static long long parse_int_arg(const char *s, const char *arg_name) {
 	char *endp;
@@ -198,11 +219,13 @@ int main(int argc, char *argv[]) {
 	// WARN
 	const char * const server_socket = "/Users/cvieth/.local/share/histdb/socket/sock.sock";
 
-	char *user = current_user();
-	if (user == NULL) {
-		chist_fatal("error: lookup user: %s", strerror(errno));
-	}
+	// session variables
+
+	const char *user = get_current_user();
+
 	pid_t ppid = getppid();
+
+	const char *cwd = get_working_directory();
 
 	char *session = NULL;
 	bool status_set = false;
@@ -264,7 +287,13 @@ int main(int argc, char *argv[]) {
 		chist_fatal("fatal: failed to allocate JSON object\n");
 	}
 	if (json_object_set_new_nocheck(obj, "session_id", json_string(session)) != 0) {
-		chist_fatal("error: setting: %s\n", "ppid");
+		chist_fatal("error: setting: %s\n", "session_id");
+	}
+	if (json_object_set_new_nocheck(obj, "wd", json_string(cwd)) != 0) {
+		chist_fatal("error: setting: %s\n", "wd");
+	}
+	if (json_object_set_new_nocheck(obj, "username", json_string(user)) != 0) {
+		chist_fatal("error: setting: %s\n", "username");
 	}
 	if (json_object_set_new_nocheck(obj, "ppid", json_integer(ppid)) != 0) {
 		chist_fatal("error: setting: %s\n", "ppid");
