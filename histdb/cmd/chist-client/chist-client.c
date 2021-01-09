@@ -302,7 +302,11 @@ int main(int argc, char *argv[]) {
 
 	struct sockaddr_un addr;
 	addr.sun_family = AF_UNIX;
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", server_socket);
+
+	int addr_size = sizeof(addr.sun_path);
+	if (snprintf(addr.sun_path, addr_size, "%s", server_socket) >= addr_size) {
+		chist_fatal("error: socket path exceeds sockaddr_un.sun_path: %s", server_socket);
+	}
 
 	if (connect(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_un)) < 0) {
 		chist_fatal("error: connecting to socket: %s", strerror(errno));
