@@ -17,32 +17,94 @@ share_dir=~/.local/share/histdb
 log_dir="$share_dir/logs"
 
 [ -d "$share_dir" ] || mkdir -p "$share_dir"
-[ -d "$log_dir" ] ||  mkdir -p "$log_dir"
+[ -d "$log_dir" ] || mkdir -p "$log_dir"
 
 base_flags=(
     --pidfiles="$share_dir"
     --name=hist-server
 )
 
-flags=(
-    --noconfig
-    --inherit
-    --name=hist-server
-    --dbglog="$log_dir/daemon.dbg.log"
-    --errlog="$log_dir/daemon.err.log"
-    --stdout="$log_dir/server.out.log"
-    --stderr="$log_dir/server.err.log"
-    "${base_flags[@]}"
-)
-if ! daemon "${flags[@]}" -- hist-server; then
-    echo >&2 'error: running daemon to start hist-server'
-    exit 1
-fi
+# flags=(
+#     --noconfig
+#     --inherit
+#     --name=hist-server
+#     --dbglog="$log_dir/daemon.dbg.log"
+#     --errlog="$log_dir/daemon.err.log"
+#     --stdout="$log_dir/server.out.log"
+#     --stderr="$log_dir/server.err.log"
+#     "${base_flags[@]}"
+# )
+# if ! daemon "${flags[@]}" -- hist-server; then
+#     echo >&2 'error: running daemon to start hist-server'
+#     exit 1
+# fi
 
-if ! daemon "${base_flags[@]}" --running; then
-    echo >&2 'error: starting hist-server'
+# if ! daemon "${base_flags[@]}" --running; then
+#     echo >&2 'error: starting hist-server'
+#     exit 1
+# fi
+
+# WARN
+_command_name() { echo "$0" | grep -oE '[^/]+$'; }
+
+die() {
+    echo -e "$(_command_name):" "$@" >&2
     exit 1
-fi
+}
+
+usage() {
+    echo "$(_command_name): COMMAND"
+    echo ''
+    echo 'Commands:'
+    echo '    restart: restart the histdb server (if running)'
+    echo '    running: check if the histdb server is running'
+    echo '    stop: stop the histdb server (if running)'
+    echo '    start (default): start the histdb if not running'
+}
+
+_invalid_cmd() {
+    local cmd="$1"
+    local name
+    name="$"
+}
+
+cmd="${1:-start}"
+case "$cmd" in
+    restart)
+        exec daemon "${base_flags[@]}" --restart
+        ;;
+    running)
+        exec daemon "${base_flags[@]}" --running
+        ;;
+    stop)
+        exec daemon "${base_flags[@]}" --stop
+        ;;
+    start)
+        flags=(
+            --noconfig
+            --inherit
+            --name=hist-server
+            --dbglog="$log_dir/daemon.dbg.log"
+            --errlog="$log_dir/daemon.err.log"
+            --stdout="$log_dir/server.out.log"
+            --stderr="$log_dir/server.err.log"
+            "${base_flags[@]}"
+        )
+        if ! daemon "${flags[@]}" -- hist-server; then
+            die 'error: running daemon to start hist-server'
+        fi
+
+        if ! daemon "${base_flags[@]}" --running; then
+            die 'error: starting hist-server'
+        fi
+        ;;
+    help | usage)
+        usage
+        ;;
+    *)
+        die "unrecognized option '$cmd'\nTry 'help' for more information" >&2
+        ;;
+esac
 
 ######################################################################
 # Old: using bash as a crappy daemon mgr
