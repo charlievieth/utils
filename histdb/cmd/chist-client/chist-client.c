@@ -23,6 +23,9 @@
 // TODO:
 // 	1. Remove unused include stmts
 
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 static struct option longopts[] = {
 	{"debug", no_argument, NULL, 'd'},
 	{"help", no_argument, NULL, 'h'},
@@ -146,8 +149,6 @@ static void chist_log_impl(const char *file, int line, enum log_level_t lvl, con
 	}
 }
 
-#define unlikely(x) __builtin_expect(!!(x), 0)
-
 #define chist_log(level, format, ...)                                          \
 	do {                                                                       \
 		if (unlikely(level >= log_level)) {                                    \
@@ -205,58 +206,62 @@ static long long parse_int_arg(const char *s, const char *arg_name) {
 	return n;
 }
 
-struct chist_options {
-	char             *log_file;
-	enum log_level_t log_level;
-};
-
 struct chist_history_request {
-	long long session_id;
-	long long ppid;
-	long long status_code;
-	long long history_id;
+	long long  session_id;
+	long long  ppid;
+	long long  status_code;
+	long long  history_id;
 	const char *wd;
 	const char *username;
-	const char **argv;
-	int argc;
+	char       *command; // argv[0]
+	char       **args;   // &argv[0], if any
+	int        args_len;
 };
 
-json_t *chist_json(const struct chist_history_request *req) {
+static json_t *chist_request_json(const struct chist_history_request *req) {
+	if (!req) {
+		chist_fatal("NULL argument");
+	}
+
 	json_t *obj = json_object();
 	if (!obj) {
 		chist_fatal("fatal: failed to allocate JSON object\n");
 	}
-	if (json_object_set_new_nocheck(obj, "session_id", json_integer(req->session_id)) != 0) {
-		chist_fatal("error: setting: session_id\n");
-	}
-	if (json_object_set_new_nocheck(obj, "wd", json_string(req->wd)) != 0) {
-		chist_fatal("error: setting: wd\n");
-	}
-	if (json_object_set_new_nocheck(obj, "username", json_string(req->username)) != 0) {
-		chist_fatal("error: setting: username\n");
-	}
-	if (json_object_set_new_nocheck(obj, "ppid", json_integer(req->ppid)) != 0) {
-		chist_fatal("error: setting: ppid\n");
-	}
-	if (json_object_set_new_nocheck(obj, "status_code", json_integer(req->status_code)) != 0) {
-		chist_fatal("error: setting: status_code\n");
-	}
-	if (json_object_set_new_nocheck(obj, "history_id", json_integer(req->history_id)) != 0) {
-		chist_fatal("error: setting: history_id\n");
+
+	#define json_set_new(key, value)                                 \
+		do {                                                         \
+			if (unlikely(!value)) {                                  \
+				chist_fatal("error: setting: " #key ": NULL value"); \
+			}                                                        \
+			int ret = json_object_set_new_nocheck(obj, key, value);  \
+			if (unlikely(ret != 0)) {                                \
+				chist_fatal("error: setting: " #key);                \
+			}                                                        \
+		} while (0)
+
+	json_set_new("session_id", json_integer(req->session_id));
+	json_set_new("ppid", json_integer(req->ppid));
+	json_set_new("status_code", json_integer(req->status_code));
+	json_set_new("history_id", json_integer(req->history_id));
+	json_set_new("wd", json_string(req->wd));
+	json_set_new("username", json_string(req->username));
+	json_set_new("command", json_string(req->command));
+
+	if (req->args_len > 0) {
+		json_t *args = json_array();
+		if (!args) {
+			chist_fatal("fatal: failed to allocate JSON array\n");
+		}
+		for (int i = 0; i < req->args_len; i++) {
+			if (json_array_append_new(args, json_string(req->args[i])) != 0) {
+				chist_fatal("error: appending to array index: %i: %s", i, req->args[i]);
+			}
+		}
+		json_set_new("args", args);
 	}
 
-	json_t *args = json_array();
-	if (!args) {
-		chist_fatal("fatal: failed to allocate JSON array\n");
-	}
-	for (int i = 0; i < req->argc; i++) {
-		if (json_array_append_new(args, json_string(req->argv[i])) != 0) {
-			chist_fatal("error: appending to array\n");
-		}
-	}
-	if (json_object_set_new_nocheck(obj, "command", args) != 0) {
-		chist_fatal("error: setting: %s\n", "command");
-	}
+	#undef json_set_new
+
 	return obj;
 }
 
@@ -352,7 +357,128 @@ error:
 	goto cleanup;
 }
 
+int xmain(int argc, char *argv[]) {
+	// WARN
+	const char * const server_socket = "/Users/cvieth/.local/share/histdb/socket/sock.sock";
+
+	if (argc < 2) {
+		usage(stderr);
+		chist_fatal("not enough arguments");
+	}
+
+	struct chist_history_request req = {
+		.session_id = -1,
+		.ppid = getppid(),
+		.username = get_current_user(),
+		.wd = get_working_directory(),
+	};
+
+	bool status_set = false;
+
+	int ch;
+	int opt_index = 0;
+	while ((ch = getopt_long(argc, argv, "dhs:c:", longopts, &opt_index)) != -1) {
+		switch (ch) {
+		case 'd':
+			// TODO: add debug info using log + log level
+			log_level = LOG_LEVEL_DEBUG;
+			break;
+		case 'h':
+			usage(stdout);
+			return 0;
+		case 's':
+			if (!optarg || strlen(optarg) == 0) {
+				chist_fatal("error: empty 'session' argument");
+			}
+			req.session_id = parse_int_arg(optarg, "session_id");
+			break;
+		case 'c':
+			req.status_code = parse_int_arg(optarg, "status-code");
+			status_set = true;
+			break;
+		case 0:
+			if (strcmp("session", longopts[opt_index].name) == 0) {
+				if (!optarg || strlen(optarg) == 0) {
+					chist_fatal("error: empty 'session' argument");
+				}
+				req.session_id = parse_int_arg(optarg, "session_id");
+				break;
+			}
+			if (strcmp("status-code", longopts[opt_index].name) == 0) {
+				req.status_code = parse_int_arg(optarg, "status-code");
+				status_set = true;
+				break;
+			}
+			chist_fatal("option %s does not take a value\n", longopts[opt_index].name);
+		default:
+			chist_fatal("error: invalid argument: %s\n", argv[optind - 1]);
+		}
+	}
+	argc -= optind;
+	argv += optind;
+
+	if (req.session_id == -1) {
+		chist_fatal("error: missing required argument: 'session'\n");
+	}
+	if (!status_set) {
+		chist_fatal("error: missing required argument: 'status-code'\n");
+	}
+	if (argc < 2) {
+		chist_fatal("error: not enough arguments\n");
+	}
+
+	req.history_id = parse_int_arg(argv[0], "history_id");
+	argc -= 1;
+	argv += 1;
+
+	req.command = argv[0];
+	argc -= 1;
+	argv += 1;
+
+	if (argc > 0) {
+		req.args = &argv[0];
+		req.args_len = argc;
+	}
+
+	chist_debug("options: session: '%lli' status_code: '%lli' history_id: '%lli'",
+		req.session_id, req.status_code, req.history_id);
+
+	json_t *obj = chist_request_json(&req);
+	if (!obj) {
+		chist_fatal("error creating JSON request");
+	}
+
+	// TODO: destroy JSON object
+	char *request_data = json_dumps(obj, JSON_ENSURE_ASCII|JSON_COMPACT);
+	if (!request_data) {
+		chist_fatal("json_dumps failed");
+	}
+	chist_debug("request_data: %s", request_data);
+
+	chist_curl(server_socket, request_data);
+
+	free(request_data);
+	return 0;
+}
+
+struct chist_options {
+	char             *log_file;
+	enum log_level_t log_level;
+	char *socket_path;
+};
+
+int parse_options(struct chist_options *opts) {
+	json_error_t error;
+	json_t *obj = json_load_file("test_options.json", 0, &error);
+
+	// json_obj
+	// test_options.json
+	return 0;
+}
+
 int main(int argc, char *argv[]) {
+	// WARN WARN WARN
+	return xmain(argc, argv);
 
 	// WARN
 	const char * const server_socket = "/Users/cvieth/.local/share/histdb/socket/sock.sock";
@@ -365,9 +491,8 @@ int main(int argc, char *argv[]) {
 
 	const char *cwd = get_working_directory();
 
-	// WARN: make session an int !!!
-	char *session = NULL;
 	bool status_set = false;
+	long long session = -1;
 	long long status;
 
 	// TODO: use this message for opt errors
@@ -390,7 +515,7 @@ int main(int argc, char *argv[]) {
 			if (!optarg || strlen(optarg) == 0) {
 				chist_fatal("error: empty 'session' argument");
 			}
-			session = strndup(optarg, 512);
+			session = parse_int_arg(optarg, "session_id");
 			break;
 		case 'c':
 			status = parse_int_arg(optarg, "status-code");
@@ -401,7 +526,7 @@ int main(int argc, char *argv[]) {
 				if (!optarg || strlen(optarg) == 0) {
 					chist_fatal("error: empty 'session' argument");
 				}
-				session = strndup(optarg, 512);
+				session = parse_int_arg(optarg, "session_id");
 				break;
 			}
 			if (strcmp("status-code", longopts[opt_index].name) == 0) {
@@ -417,7 +542,7 @@ int main(int argc, char *argv[]) {
 	argc -= optind;
 	argv += optind;
 
-	if (session == NULL) {
+	if (session == -1) {
 		chist_fatal("error: missing required argument: 'session'\n");
 	}
 	if (!status_set) {
@@ -431,14 +556,14 @@ int main(int argc, char *argv[]) {
 	argc -= 1;
 	argv += 1;
 
-	chist_debug("options: session: '%s' status_code: '%lli' history_id: '%lli'",
+	chist_debug("options: session: '%lli' status_code: '%lli' history_id: '%lli'",
 		session, status, history_id);
 
 	json_t *obj = json_object();
 	if (!obj) {
 		chist_fatal("fatal: failed to allocate JSON object");
 	}
-	if (json_object_set_new_nocheck(obj, "session_id", json_string(session)) != 0) {
+	if (json_object_set_new_nocheck(obj, "session_id", json_integer(session)) != 0) {
 		chist_fatal("error: setting: session_id");
 	}
 	if (json_object_set_new_nocheck(obj, "wd", json_string(cwd)) != 0) {
@@ -481,6 +606,32 @@ int main(int argc, char *argv[]) {
 	free(request_data);
 	return 0;
 }
+
+// STRNDUP
+/*
+static char *chist_strndup(const char *str, size_t n) {
+	char *copy;
+	size_t len = strlen(str);
+
+	if (likely(len <= n)) {
+		if ((copy = malloc(len + 1)) == NULL) {
+			chist_fatal("OOM");
+		}
+		memcpy(copy, str, len + 1);
+	} else {
+		chist_warn("truncating string: size %zu exceeds max_size: %zu", len, n);
+		len = n;
+
+		if ((copy = malloc(len + 1)) == NULL) {
+			chist_fatal("OOM");
+		}
+		memcpy(copy, str, len);
+		copy[len] = '\0';
+	}
+
+	return copy;
+}
+*/
 
 // CURL
 /*
