@@ -2,12 +2,11 @@
 # Debug (-g creates the *.dSYM directory)
 #
 # CFLAGS=-O2 -std=c11 -g -flto
-CFLAGS=-O1 -std=c11
+CFLAGS=-O2 -std=c11
 CFLAGS+=-I/usr/local/Cellar/jansson/2.13.1/include -L/usr/local/Cellar/jansson/2.13.1/lib -ljansson
 CFLAGS+=-lcurl
 # CFLAGS += $(shell pkg-config --cflags json-c)
 # LDFLAGS += $(shell pkg-config --libs json-c)
-
 #
 # WARNINGS: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
 #

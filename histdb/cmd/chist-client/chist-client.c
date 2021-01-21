@@ -1,23 +1,24 @@
-#include <jansson.h>
-
-#include <stdio.h>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <strings.h>
-#include <ctype.h>
-#include <stdbool.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <getopt.h>
-#include <time.h>
-#include <stdarg.h>
 #include <assert.h>
-#include <unistd.h>
+#include <ctype.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <time.h>
+
+#include <getopt.h>
 #include <pwd.h>
 
+#include <sys/types.h> // pid_t
+#include <unistd.h>    // getppid
+
 #include <sys/param.h> // MAXPATHLEN
+#include <sys/time.h>  // gettimeofday, timeval
+
+#include <curl/curl.h>
+#include <jansson.h>
 
 // TODO:
 // 	1. Remove unused include stmts
@@ -40,7 +41,7 @@ enum log_level_t {
 
 static enum log_level_t log_level = LOG_LEVEL_ERROR;
 
-const char * chist_log_lvl_str(enum log_level_t lvl) {
+static const char * chist_log_lvl_str(enum log_level_t lvl) {
 	switch (lvl) {
 	case LOG_LEVEL_DEBUG:
 		return "DEBUG";
@@ -72,9 +73,8 @@ static void usage(FILE *stream) {
 }
 
 static int chist_timestamp(char *buffer, size_t bufsz) {
-	if (!buffer) {
-		return -1;
-	}
+	assert(buffer);
+	assert(bufsz >= 32);
 
 	struct timeval tv;
 	if (gettimeofday(&tv, NULL) != 0) {
@@ -85,24 +85,21 @@ static int chist_timestamp(char *buffer, size_t bufsz) {
 
 	struct tm *tm_info = localtime(&tv.tv_sec);
 	if (!tm_info) {
+		perror("localtime");
 		assert(tm_info);
 		return -1;
 	}
 
-	int n1 = strftime(buffer, bufsz, "%Y-%m-%dT%H:%M:%S", tm_info);
-	if (n1 <= 0) {
-		assert(n1 > 0);
-		return -1;
-	}
+	int n;
+	char format[27];
 
-	// Append microseconds
-	int n2 = snprintf(&buffer[n1], bufsz-n1, ".%06d", tv.tv_usec);
-	if (n2 <= 0) {
-		assert(n2 > 0);
-		return -1;
-	}
+	n = snprintf(format, sizeof(format), "%%Y-%%m-%%dT%%H:%%M:%%S" ".%06d" "%%z",
+		tv.tv_usec);
+	assert(n == sizeof(format) - 1);
 
-	return n1 + n2;
+	n = strftime(buffer, bufsz, format, tm_info);
+	assert(n > 0);
+	return n;
 }
 
 // CEV: forward declaration
@@ -156,7 +153,7 @@ static void chist_log_impl(const char *file, int line, enum log_level_t lvl, con
 		if (unlikely(level >= log_level)) {                                    \
 			chist_log_impl(__FILE__, __LINE__, level, format,  ##__VA_ARGS__); \
 		}                                                                      \
-	} while (0);
+	} while (0)
 
 // TODO: remove unused macros
 #define chist_debug(format, ...)  chist_log(LOG_LEVEL_DEBUG, format,  ##__VA_ARGS__)
@@ -169,15 +166,11 @@ static void chist_log_impl(const char *file, int line, enum log_level_t lvl, con
 		exit(EXIT_FAILURE);                                 \
 	} while (0)
 
-static char _chist_username[1024];
-
-// TODO: don't allocate here!!!
 static const char *get_current_user() {
 	errno = 0;
 	struct passwd *pw = getpwuid(getuid());
-	assert(pw && pw->pw_name);
 	if (pw && pw->pw_name) {
-		return strncpy(_chist_username, pw->pw_name, sizeof(_chist_username));
+		return pw->pw_name;
 	}
 	chist_warn("getpwuid failed: %s", strerror(errno));
 	return "UNKNOWN";
@@ -187,14 +180,12 @@ static char _chist_wd[4096];
 
 static const char *get_working_directory() {
 	const char *cwd = getcwd(_chist_wd, sizeof(_chist_wd));
-	assert(cwd);
 	if (cwd) {
 		return cwd;
 	}
 	chist_warn("getcwd failed: %s", strerror(errno));
 	return "UNKNOWN";
 }
-
 
 static long long parse_int_arg(const char *s, const char *arg_name) {
 	char *endp;
@@ -209,13 +200,160 @@ static long long parse_int_arg(const char *s, const char *arg_name) {
 			msg = "unknown error";
 		}
 		chist_fatal("error: parsing '%s' argument (%s): %s\n", arg_name, s, msg);
-		assert(0);
 		exit(EXIT_FAILURE); // unreachable
 	}
 	return n;
 }
 
+struct chist_options {
+	char             *log_file;
+	enum log_level_t log_level;
+};
+
+struct chist_history_request {
+	long long session_id;
+	long long ppid;
+	long long status_code;
+	long long history_id;
+	const char *wd;
+	const char *username;
+	const char **argv;
+	int argc;
+};
+
+json_t *chist_json(const struct chist_history_request *req) {
+	json_t *obj = json_object();
+	if (!obj) {
+		chist_fatal("fatal: failed to allocate JSON object\n");
+	}
+	if (json_object_set_new_nocheck(obj, "session_id", json_integer(req->session_id)) != 0) {
+		chist_fatal("error: setting: session_id\n");
+	}
+	if (json_object_set_new_nocheck(obj, "wd", json_string(req->wd)) != 0) {
+		chist_fatal("error: setting: wd\n");
+	}
+	if (json_object_set_new_nocheck(obj, "username", json_string(req->username)) != 0) {
+		chist_fatal("error: setting: username\n");
+	}
+	if (json_object_set_new_nocheck(obj, "ppid", json_integer(req->ppid)) != 0) {
+		chist_fatal("error: setting: ppid\n");
+	}
+	if (json_object_set_new_nocheck(obj, "status_code", json_integer(req->status_code)) != 0) {
+		chist_fatal("error: setting: status_code\n");
+	}
+	if (json_object_set_new_nocheck(obj, "history_id", json_integer(req->history_id)) != 0) {
+		chist_fatal("error: setting: history_id\n");
+	}
+
+	json_t *args = json_array();
+	if (!args) {
+		chist_fatal("fatal: failed to allocate JSON array\n");
+	}
+	for (int i = 0; i < req->argc; i++) {
+		if (json_array_append_new(args, json_string(req->argv[i])) != 0) {
+			chist_fatal("error: appending to array\n");
+		}
+	}
+	if (json_object_set_new_nocheck(obj, "command", args) != 0) {
+		chist_fatal("error: setting: %s\n", "command");
+	}
+	return obj;
+}
+
+struct memory_buffer {
+	char   *data;
+	size_t size;
+};
+
+static size_t write_memory_callback(void *contents, size_t size, size_t nmemb, void *userp) {
+	size_t realsize = size * nmemb;
+	struct memory_buffer *mem = (struct memory_buffer *)userp;
+
+	char *ptr = realloc(mem->data, mem->size + realsize + 1);
+	if (!ptr) {
+		chist_error("not enough memory (realloc returned NULL)\n");
+		return 0;
+	}
+
+	mem->data = ptr;
+	memcpy(&(mem->data[mem->size]), contents, realsize);
+	mem->size += realsize;
+	mem->data[mem->size] = 0;
+
+	return realsize;
+}
+
+static int chist_curl(const char *socket_path, const char *msg) {
+	int exit_code = 0;
+
+	CURL *curl = curl_easy_init();
+	if (!curl) {
+		chist_error("curl_easy_init: faild");
+		goto error;
+	}
+
+	struct curl_slist hdrs = {
+		.data = "Content-Type: application/json",
+		.next = NULL,
+	};
+
+	struct memory_buffer chunk = {
+		.data = NULL,
+		.size = 0,
+	};
+
+	#define curl_setopt(option, param)                            \
+		do {                                                      \
+			CURLcode ret = curl_easy_setopt(curl, option, param); \
+			if (unlikely(ret != CURLE_OK)) {                      \
+				chist_error("curl_easy_setopt: " #option ": %s",  \
+					curl_easy_strerror(ret));                     \
+				goto error;                                       \
+			}                                                     \
+		} while (0)
+
+	curl_setopt(CURLOPT_UNIX_SOCKET_PATH, socket_path);
+	curl_setopt(CURLOPT_URL, "http://localhost/reflect");
+	curl_setopt(CURLOPT_POSTFIELDS, msg);
+	curl_setopt(CURLOPT_POSTFIELDSIZE, (long)strlen(msg));
+	curl_setopt(CURLOPT_HTTPHEADER, &hdrs);
+
+	// WARN
+	curl_setopt(CURLOPT_WRITEFUNCTION, write_memory_callback);
+	curl_setopt(CURLOPT_WRITEDATA, &chunk);
+
+	#undef curl_setopt
+
+	CURLcode res = curl_easy_perform(curl);
+	if (res != CURLE_OK) {
+		chist_error("curl_easy_perform: failed: %s", curl_easy_strerror(res));
+		goto error;
+	}
+
+	long http_code;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+	if (http_code != 200) {
+		chist_error("curl_easy_perform: status code: %li: response: %s",
+				http_code, chunk.data);
+		goto error;
+	}
+
+cleanup:
+	if (curl) {
+		curl_easy_cleanup(curl);
+	}
+	if (chunk.data) {
+		free(chunk.data);
+	}
+	return exit_code;
+
+error:
+	exit_code = 1;
+	goto cleanup;
+}
+
 int main(int argc, char *argv[]) {
+
 	// WARN
 	const char * const server_socket = "/Users/cvieth/.local/share/histdb/socket/sock.sock";
 
@@ -227,12 +365,15 @@ int main(int argc, char *argv[]) {
 
 	const char *cwd = get_working_directory();
 
+	// WARN: make session an int !!!
 	char *session = NULL;
 	bool status_set = false;
 	long long status;
 
 	// TODO: use this message for opt errors
 	// 	gzip: unrecognized option '--foobar'
+
+	// TODO: fix arg parsing to support long opts
 
 	int ch;
 	int opt_index = 0;
@@ -246,18 +387,29 @@ int main(int argc, char *argv[]) {
 			usage(stdout);
 			return 0;
 		case 's':
-			if (!optarg) {
-				chist_fatal("error: missing 'session' argument: %s", longopts[opt_index].name);
+			if (!optarg || strlen(optarg) == 0) {
+				chist_fatal("error: empty 'session' argument");
 			}
 			session = strndup(optarg, 512);
 			break;
 		case 'c':
-			if (!optarg) {
-				chist_fatal("error: missing 'status-code' argument");
-			}
 			status = parse_int_arg(optarg, "status-code");
 			status_set = true;
 			break;
+		case 0:
+			if (strcmp("session", longopts[opt_index].name) == 0) {
+				if (!optarg || strlen(optarg) == 0) {
+					chist_fatal("error: empty 'session' argument");
+				}
+				session = strndup(optarg, 512);
+				break;
+			}
+			if (strcmp("status-code", longopts[opt_index].name) == 0) {
+				status = parse_int_arg(optarg, "status-code");
+				status_set = true;
+				break;
+			}
+			chist_fatal("option %s does not take a value\n", longopts[opt_index].name);
 		default:
 			chist_fatal("error: invalid argument: %s\n", argv[optind - 1]);
 		}
@@ -272,7 +424,7 @@ int main(int argc, char *argv[]) {
 		chist_fatal("error: missing required argument: 'status-code'\n");
 	}
 	if (argc < 1) {
-		chist_fatal("error: missing COMMAND\n");
+		chist_fatal("error: not enough arguments\n");
 	}
 
 	long long history_id = parse_int_arg(argv[0], "history_id");
@@ -284,37 +436,37 @@ int main(int argc, char *argv[]) {
 
 	json_t *obj = json_object();
 	if (!obj) {
-		chist_fatal("fatal: failed to allocate JSON object\n");
+		chist_fatal("fatal: failed to allocate JSON object");
 	}
 	if (json_object_set_new_nocheck(obj, "session_id", json_string(session)) != 0) {
-		chist_fatal("error: setting: %s\n", "session_id");
+		chist_fatal("error: setting: session_id");
 	}
 	if (json_object_set_new_nocheck(obj, "wd", json_string(cwd)) != 0) {
-		chist_fatal("error: setting: %s\n", "wd");
+		chist_fatal("error: setting: wd");
 	}
 	if (json_object_set_new_nocheck(obj, "username", json_string(user)) != 0) {
-		chist_fatal("error: setting: %s\n", "username");
+		chist_fatal("error: setting: username");
 	}
 	if (json_object_set_new_nocheck(obj, "ppid", json_integer(ppid)) != 0) {
-		chist_fatal("error: setting: %s\n", "ppid");
+		chist_fatal("error: setting: ppid");
 	}
 	if (json_object_set_new_nocheck(obj, "status_code", json_integer(status)) != 0) {
-		chist_fatal("error: setting: %s\n", "status_code");
+		chist_fatal("error: setting: status_code");
 	}
 	if (json_object_set_new_nocheck(obj, "history_id", json_integer(history_id)) != 0) {
-		chist_fatal("error: setting: %s\n", "history_id");
+		chist_fatal("error: setting: history_id");
 	}
 	json_t *args = json_array();
 	if (!args) {
-		chist_fatal("fatal: failed to allocate JSON array\n");
+		chist_fatal("fatal: failed to allocate JSON array");
 	}
 	for (int i = 0; i < argc; i++) {
 		if (json_array_append_new(args, json_string(argv[i])) != 0) {
-			chist_fatal("error: appending to array\n");
+			chist_fatal("error: appending to array");
 		}
 	}
 	if (json_object_set_new_nocheck(obj, "command", args) != 0) {
-		chist_fatal("error: setting: %s\n", "command");
+		chist_fatal("error: setting: command");
 	}
 
 	// TODO: destroy JSON object
@@ -324,30 +476,9 @@ int main(int argc, char *argv[]) {
 	}
 	chist_debug("request_data: %s", request_data);
 
-	int sockfd = socket(PF_UNIX, SOCK_STREAM, 0);
-	if (sockfd == -1) {
-		chist_fatal("WAT");
-	}
+	chist_curl(server_socket, request_data);
 
-	struct sockaddr_un addr;
-	addr.sun_family = AF_UNIX;
-
-	int addr_size = sizeof(addr.sun_path);
-	if (snprintf(addr.sun_path, addr_size, "%s", server_socket) >= addr_size) {
-		chist_fatal("error: socket path exceeds sockaddr_un.sun_path: %s", server_socket);
-	}
-
-	if (connect(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_un)) < 0) {
-		chist_fatal("error: connecting to socket: %s", strerror(errno));
-	}
-
-	if (write(sockfd, request_data, strlen(request_data)) < 0) {
-		close(sockfd);
-		chist_fatal("error: writing to socket: %s", strerror(errno));
-	}
-	close(sockfd);
 	free(request_data);
-
 	return 0;
 }
 
