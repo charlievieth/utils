@@ -101,6 +101,14 @@ func (c *ColorMode) UnmarshalJSON(b []byte) error {
 	}
 }
 
+// TODO: consider using this
+//
+// type XGamat [3][2]float32
+//
+// func (g XGamat) Red() XY   { return XY{X: g[0][0], Y: g[0][1]} }
+// func (g XGamat) Green() XY { return XY{X: g[1][0], Y: g[1][1]} }
+// func (g XGamat) Blue() XY  { return XY{X: g[2][0], Y: g[2][1]} }
+
 type ColorGamut struct {
 	Red   XY `json:"red"`   // max X, max Y
 	Green XY `json:"green"` // max X, max Y
@@ -370,6 +378,7 @@ type LightConfig struct {
 	Direction string `json:"direction"`
 }
 
+// TODO: move
 type Lights map[string]Light
 
 type GroupType string

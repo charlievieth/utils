@@ -31,14 +31,18 @@ func init() {
 	}
 }
 
+// TODO: add method
 type StatusCodeError struct {
-	Code int
-	URL  string
+	Code   int
+	Method string
+	URL    string
 }
 
 func (t *StatusCodeError) Error() string {
-	return fmt.Sprintf("HUE server error (%s): %d - %s", t.URL, t.Code,
-		http.StatusText(t.Code))
+	return fmt.Sprintf("%s: %s: returned status code: %d",
+		t.Method, t.URL, t.Code)
+	// return fmt.Sprintf("HUE server error (%s): %d - %s", t.URL, t.Code,
+	// 	http.StatusText(t.Code))
 }
 
 func (t *StatusCodeError) HTTPStatusCode() int {
@@ -153,6 +157,48 @@ func (c *Client) url(endpoint string) string {
 	return u.String()
 }
 
+func (c *Client) XDo(method, endpoint string, request, response interface{}) error {
+	var body io.Reader
+	if request != nil {
+		b, err := json.Marshal(request)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+	}
+
+	url := c.url(endpoint)
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		// WARN: should we always set this?
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	c.limit.Wait()
+	res, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer closeResponse(res)
+
+	if res.StatusCode != http.StatusOK {
+		return &StatusCodeError{res.StatusCode, method, url}
+	}
+
+	if response != nil {
+		if err := json.NewDecoder(res.Body).Decode(response); err != nil {
+			return err
+		}
+	} else {
+		closeResponse(res)
+	}
+
+	return nil
+}
+
 func (c *Client) Do(method, endpoint string, body io.Reader) (*http.Response, error) {
 	url := c.url(endpoint)
 	req, err := http.NewRequest(method, url, body)
@@ -167,7 +213,7 @@ func (c *Client) Do(method, endpoint string, body io.Reader) (*http.Response, er
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, &StatusCodeError{res.StatusCode, url}
+		return nil, &StatusCodeError{res.StatusCode, method, url}
 	}
 	return res, nil
 }
@@ -337,25 +383,6 @@ func (p *PhueTime) UnmarshalJSON(data []byte) error {
 }
 
 func main() {
-	{
-		fmt.Println("MaxInt8:", math.MaxInt8)
-		fmt.Println("MinInt8:", math.MinInt8)
-		fmt.Println("MaxInt16:", math.MaxInt16)
-		fmt.Println("MinInt16:", math.MinInt16)
-		fmt.Println("MaxInt32:", math.MaxInt32)
-		fmt.Println("MinInt32:", math.MinInt32)
-		fmt.Println("MaxInt64:", math.MaxInt64)
-		fmt.Println("MinInt64:", math.MinInt64)
-		fmt.Println("MaxUint8:", math.MaxUint8)
-		fmt.Println("MaxUint16:", math.MaxUint16)
-		fmt.Println("MaxUint32:", math.MaxUint32)
-		// fmt.Println("MaxUint64:", math.MaxUint64)
-		return
-		// on := true
-		// r := &GroupStateRequest{
-		// 	On: &on,
-		// }
-	}
 
 	// {
 	// 	fmt.Println(time.Parse("2006-01-02T15:04:05", "2018-12-14T19:31:33"))
@@ -369,11 +396,15 @@ func main() {
 	for _, l := range lights {
 		if l.State.XY != nil {
 			c := XYToColor(float64(l.State.XY.X), float64(l.State.XY.Y))
+			cx, cy := ColorToXY(c)
 
 			// c := l.State.XY.RGB(l.State.Brightness)
 			// _ = c
 
 			fmt.Printf("R: %d G: %d B: %d\n", c.R, c.G, c.B)
+			fmt.Printf("X: %f Y: %f CX: %f CY: %f DX: %f DY: %f\n",
+				float64(l.State.XY.X), float64(l.State.XY.Y), cx, cy,
+				math.Abs(float64(l.State.XY.X)-cx), math.Abs(float64(l.State.XY.Y)-cy))
 			fmt.Printf("\033[38;2;%d;%d;%dmCOLOR: %s\033[0m\n", c.R, c.G, c.B, l.Name)
 			// // printf "\x1b[38;2;255;100;0mTRUECOLOR\x1b[0m\n"
 			// // l.State.XY.RGB(l.State.Brightness)
