@@ -56,9 +56,14 @@ func Walk(root string, walkFn func(path string, typ os.FileMode) error) error {
 	// even too low of a minimum. Profile more.
 	numWorkers := 4
 	if n := runtime.NumCPU(); n > numWorkers {
+		// TODO (CEV): limit concurrency on macOS ???
 		numWorkers = n
 	}
 
+	return walkN(root, numWorkers, walkFn)
+}
+
+func walkN(root string, numWorkers int, walkFn func(path string, typ os.FileMode) error) error {
 	// Make sure to wait for all workers to finish, otherwise
 	// walkFn could still be called after returning. This Wait call
 	// runs after close(e.donec) below.
