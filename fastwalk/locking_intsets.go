@@ -78,7 +78,7 @@ func (s *LockingSparseSet) TakeMin(p *int) bool {
 	return ok
 }
 
-//go:linkname check intsets.check
+//go:linkname check golang.org/x/tools/container/intsets.(*Sparse).check
 func check(s *intsets.Sparse) error
 
 func (s *LockingSparseSet) Check() error {
@@ -94,78 +94,166 @@ func (s *LockingSparseSet) Has(x int) bool {
 	return ok
 }
 
-func (s *LockingSparseSet) Copy(x *intsets.Sparse) {
+func (s *LockingSparseSet) Copy(x *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.Copy(x)
+	if s != x {
+		x.mu.RLock()
+	}
+	s.sparse.Copy(&x.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) IntersectionWith(x *intsets.Sparse) {
+func (s *LockingSparseSet) IntersectionWith(x *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.IntersectionWith(x)
+	if s != x {
+		x.mu.RLock()
+	}
+	s.sparse.IntersectionWith(&x.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) Intersection(x, y *intsets.Sparse) {
+func (s *LockingSparseSet) Intersection(x, y *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.Intersection(x, y)
+	if s != x {
+		x.mu.RLock()
+	}
+	if s != y {
+		y.mu.RLock()
+	}
+	s.sparse.Intersection(&x.sparse, &y.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
+	if s != y {
+		y.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) Intersects(x *intsets.Sparse) bool {
+func (s *LockingSparseSet) Intersects(x *LockingSparseSet) bool {
 	s.mu.RLock()
-	ok := s.sparse.Intersects(x)
+	if s != x {
+		x.mu.RLock()
+	}
+	ok := s.sparse.Intersects(&x.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
 	s.mu.RUnlock()
 	return ok
 }
 
-func (s *LockingSparseSet) UnionWith(x *intsets.Sparse) bool {
+func (s *LockingSparseSet) UnionWith(x *LockingSparseSet) bool {
 	s.mu.Lock()
-	ok := s.sparse.UnionWith(x)
+	if s != x {
+		x.mu.RLock()
+	}
+	ok := s.sparse.UnionWith(&x.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
 	s.mu.Unlock()
 	return ok
 }
 
-func (s *LockingSparseSet) Union(x, y *intsets.Sparse) {
+func (s *LockingSparseSet) Union(x, y *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.Union(x, y)
+	if s != x {
+		x.mu.RLock()
+	}
+	if s != y {
+		y.mu.RLock()
+	}
+	s.sparse.Union(&x.sparse, &y.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
+	if s != y {
+		y.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) DifferenceWith(x *intsets.Sparse) {
+func (s *LockingSparseSet) DifferenceWith(x *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.DifferenceWith(x)
+	if s != x {
+		x.mu.RLock()
+	}
+	s.sparse.DifferenceWith(&x.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) Difference(x, y *intsets.Sparse) {
+func (s *LockingSparseSet) Difference(x, y *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.Difference(x, y)
+	if s != x {
+		x.mu.RLock()
+	}
+	if s != y {
+		y.mu.RLock()
+	}
+	s.sparse.Difference(&x.sparse, &y.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
+	if s != y {
+		y.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) SymmetricDifferenceWith(x *intsets.Sparse) {
+func (s *LockingSparseSet) SymmetricDifferenceWith(x *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.SymmetricDifferenceWith(x)
+	if s != x {
+		x.mu.RLock()
+	}
+	s.sparse.SymmetricDifferenceWith(&x.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) SymmetricDifference(x, y *intsets.Sparse) {
+func (s *LockingSparseSet) SymmetricDifference(x, y *LockingSparseSet) {
 	s.mu.Lock()
-	s.sparse.SymmetricDifference(x, y)
+	if s != x {
+		x.mu.RLock()
+	}
+	if s != y {
+		y.mu.RLock()
+	}
+	s.sparse.SymmetricDifference(&x.sparse, &y.sparse)
+	if s != x {
+		x.mu.RUnlock()
+	}
+	if s != y {
+		y.mu.RUnlock()
+	}
 	s.mu.Unlock()
 }
 
-func (s *LockingSparseSet) SubsetOf(x *intsets.Sparse) bool {
+func (s *LockingSparseSet) SubsetOf(x *LockingSparseSet) bool {
 	s.mu.RLock()
-	v := s.sparse.SubsetOf(x)
+	x.mu.RLock()
+	v := s.sparse.SubsetOf(&x.sparse)
+	x.mu.RUnlock()
 	s.mu.RUnlock()
 	return v
 }
 
-func (s *LockingSparseSet) Equals(t *intsets.Sparse) bool {
+func (s *LockingSparseSet) Equals(t *LockingSparseSet) bool {
 	s.mu.RLock()
-	v := s.sparse.Equals(t)
+	t.mu.RLock()
+	v := s.sparse.Equals(&t.sparse)
+	t.mu.RUnlock()
 	s.mu.RUnlock()
 	return v
 }
