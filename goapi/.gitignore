@@ -1,0 +1,5 @@
+/goapi
+*.txt
+*.exe
+*.test
+/tmp
