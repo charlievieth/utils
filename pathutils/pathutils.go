@@ -33,10 +33,10 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 		}
 		r.buf = append(r.buf, frag...)
 	}
-	r.buf = append(r.buf, frag...)
-	if len(r.buf) != 0 {
-		r.buf = r.buf[:len(r.buf)-1]
+	if n := len(frag); n != 0 && frag[n-1] == delim {
+		frag = frag[:n-1]
 	}
+	r.buf = append(r.buf, frag...)
 	return r.buf, err
 }
 
