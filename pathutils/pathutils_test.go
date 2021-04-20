@@ -343,3 +343,34 @@ func BenchmarkBase(b *testing.B) {
 		Base(name)
 	}
 }
+
+func BenchmarkReader(b *testing.B) {
+	rr := rand.New(rand.NewSource(123))
+
+	var data []byte
+	for i := 0; i < 4096; i++ {
+		data = append(data, strings.Repeat("a", rr.Intn(8192))...)
+		data = append(data, '\n')
+	}
+	rd := bytes.NewReader(data)
+
+	br := bufio.NewReader(rd)
+	r := NewReader(br)
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		rd.Seek(0, io.SeekStart)
+		br.Reset(rd)
+
+		for {
+			_, err := r.ReadBytes('\n')
+			if err != nil {
+				if err != io.EOF {
+					b.Fatal(err)
+				}
+				break
+			}
+		}
+	}
+}
