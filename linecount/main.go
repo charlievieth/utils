@@ -19,12 +19,66 @@ import (
 	"github.com/charlievieth/pkgs/fastwalk"
 )
 
+// var xKnownFileNames = map[string]string{
+// 	"AUTHORS":   "AUTHORS",
+// 	"BACKUP":    "BACKUP",
+// 	"BASEIMAGE": "BASEIMAGE",
+// 	"BUILD":     "BUILD",
+// 	// "BUILD.bazel":     "BUILD.bazel",
+// 	"ChangeLog":       "CHANGELOG",
+// 	"CHANGELOG":       "CHANGELOG",
+// 	"CHANGELOG.md":    "CHANGELOG",
+// 	"CMakeLists.txt":  "CMakeLists.txt",
+// 	"CODEOWNERS":      "CODEOWNERS",
+// 	"CONTRIBUTING":    "CONTRIBUTING",
+// 	"CONTRIBUTING.md": "CONTRIBUTING",
+// 	"CONTRIBUTORS":    "CONTRIBUTORS",
+// 	"COPYING":         "COPYING",
+// 	"Depend":          "Depend",
+// 	"Dockerfile":      "Dockerfile",
+// 	"Doxyfile":        "Doxyfile",
+// 	"Gemfile":         "Gemfile",
+// 	"GNUmakefile":     "GNUmakefile",
+// 	"GOVERNANCE.md":   "GOVERNANCE",
+// 	"Implies":         "Implies",
+// 	"INSTALL":         "INSTALL",
+// 	"INSTALLER":       "INSTALLER",
+// 	"LICENSE":         "LICENSE",
+// 	"LICENSE.md":      "LICENSE",
+// 	"LICENSE.txt":     "LICENSE",
+// 	"LINGUAS":         "LINGUAS",
+// 	"MAINTAINERS":     "MAINTAINERS",
+// 	"MAINTAINERS.md":  "MAINTAINERS",
+// 	"makefile":        "Makefile",
+// 	"Makefile":        "Makefile",
+// 	"MANIFEST":        "MANIFEST",
+// 	"METADATA":        "METADATA",
+// 	"mkinstalldirs":   "mkinstalldirs",
+// 	"NEWS":            "NEWS",
+// 	"NOTICE":          "NOTICE",
+// 	"OWNERS":          "OWNERS",
+// 	"PATENTS":         "PATENTS",
+// 	"Podfile":         "Podfile",
+// 	"Rakefile":        "Rakefile",
+// 	"README":          "README",
+// 	"README.md":       "README",
+// 	"README.txt":      "README",
+// 	"RECORD":          "RECORD",
+// 	"TODO":            "TODO",
+// 	"TODO.md":         "TODO",
+// 	"TODO.txt":        "TODO",
+// 	"VERSION":         "VERSION",
+// 	"Versions":        "Versions",
+// 	"WHEEL":           "WHEEL",
+// 	"WORKSPACE":       "WORKSPACE",
+// }
+
 func WellKnownFilename(s string) bool {
 	switch s {
 	case "Dockerfile", "Gemfile", "Makefile", "Podfile", "Rakefile",
 		"CMakeLists.txt", "LICENSE", "MANIFEST", "METADATA", "NOTICE",
 		"AUTHORS", "CODEOWNERS", "CONTRIBUTORS", "README", "PATENTS",
-		"OWNERS", "BUILD", "WORKSPACE":
+		"OWNERS", "BUILD", "WORKSPACE", "tags":
 		return true
 	}
 	return false
@@ -33,7 +87,7 @@ func WellKnownFilename(s string) bool {
 func IgnoredExtension(ext string) bool {
 	switch ext {
 	case ".bz", ".bzip", ".exe", ".gz", ".gzip", ".tar", ".tbz", ".tgz",
-		".vdi", ".xz", ".zip":
+		".vdi", ".xz", ".zip", ".zst":
 		return true
 	}
 	return false
@@ -81,10 +135,11 @@ var ErrBinary = errors.New("binary file")
 
 var newLine = []byte{'\n'}
 
-func LineCount(filename string) (int64, error) {
+func LineCount(filename string, needExt bool) (int64, string, error) {
+
 	f, err := os.Open(filename)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	p := bufPool.Get().(*[]byte)
 	defer func() {
@@ -93,21 +148,38 @@ func LineCount(filename string) (int64, error) {
 	}()
 	buf := *p
 
-	nr, err := f.Read(buf)
-	if isBinary(buf[0:nr]) {
-		return 0, ErrBinary
-	}
-	lines := int64(bytes.Count(buf[0:nr], newLine))
-	if err != nil {
-		if err != io.EOF {
-			return 0, err
-		}
-		return lines, nil
-	}
+	var ext string // TODO: "exe" or "ext" ???
+	var lines int64
 
+	// nr, err := f.Read(buf)
+	// if isBinary(buf[0:nr]) {
+	// 	return 0, "", ErrBinary
+	// }
+	// s := buf[0:nr]
+	// lines := int64(bytes.Count(s, newLine))
+	// if needExt {
+	// 	ext = ExtractShebang(s)
+	// }
+	// if err != nil {
+	// 	if err != io.EOF {
+	// 		return 0, "", err
+	// 	}
+	// 	return lines, ext, nil
+	// }
+
+	first := true
 	for {
 		nr, er := f.Read(buf)
+		if first {
+			if isBinary(buf[0:nr]) {
+				return 0, "", ErrBinary
+			}
+			first = false
+		}
 		lines += int64(bytes.Count(buf[0:nr], newLine))
+		if needExt && ext == "" {
+			ext = ExtractShebang(buf[0:nr])
+		}
 		if er != nil {
 			if er != io.EOF {
 				err = er
@@ -115,15 +187,16 @@ func LineCount(filename string) (int64, error) {
 			break
 		}
 	}
-	return lines, err
+	return lines, ext, err
 }
 
 type Walker struct {
 	exts     map[string]int64
 	ignore   map[string]bool
 	mu       sync.Mutex
-	seen     *SeenFiles
 	symlinks bool
+	seen     SeenFiles
+	// seen     *SeenFiles
 }
 
 func (w *Walker) Walk(path string, typ os.FileMode) error {
@@ -135,12 +208,17 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 		if IgnoredExtension(ext) {
 			return nil
 		}
-		lines, err := LineCount(path)
+		lines, scriptExt, err := LineCount(path, ext == "")
+		// lines, err := LineCount(path)
 		if err != nil {
 			if err != ErrBinary {
 				return err
 			}
 			return nil
+		}
+		if ext == "" && scriptExt != "" {
+			fmt.Fprintf(os.Stderr, "%s => %s\n", scriptExt, path)
+			ext = scriptExt + "-script"
 		}
 		w.mu.Lock()
 		w.exts[ext] += lines
@@ -153,7 +231,7 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 			base == "testdata" || base == "node_modules" || base == "venv" {
 			return filepath.SkipDir
 		}
-		if w.ignore != nil && w.ignore[base] {
+		if w.ignore[base] {
 			return filepath.SkipDir
 		}
 		return nil
@@ -170,16 +248,22 @@ func (w *Walker) WalkLinks(path string, typ os.FileMode) error {
 		}
 		typ = fi.Mode()
 	}
-	seen := w.seen.Seen(path)
+	seen := w.seen.Path(path)
 	if typ.IsRegular() {
 		if seen {
 			return nil
 		}
-		lines, err := LineCount(path)
+		ext := Ext(path)
+		if IgnoredExtension(ext) {
+			return nil
+		}
+		lines, scriptExt, err := LineCount(path, ext == "")
 		if err != nil {
 			return err
 		}
-		ext := Ext(path)
+		if ext == "" && scriptExt != "" {
+			ext = scriptExt
+		}
 		w.mu.Lock()
 		w.exts[ext] += lines
 		w.mu.Unlock()
