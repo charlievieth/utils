@@ -39,13 +39,15 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
+const (
+	OutboundNumber = ""
+	SID            = ""
+	Token          = ""
+	LogFile        = "log.json"
+	BaseInterval   = time.Minute * 15
+)
+
 func main() {
-	const (
-		SID          = "REPLACE_ME"
-		Token        = "REPLACE_ME"
-		LogFile      = "log.json"
-		BaseInterval = time.Minute * 15
-	)
 	f, err := os.OpenFile(LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
 	if err != nil {
 		Fatal(err)
@@ -70,7 +72,21 @@ var Message = [...]string{
 func Ping(wg *sync.WaitGroup, client *gotwilio.Twilio, enc *json.Encoder, number string) {
 	const Start = 999999
 	defer wg.Done()
-	n := Start - 1
+
+	n := Start
+	{
+		initialMsg := fmt.Sprintf("Welcome to %d Bottles of Beer on the Wall!", n)
+		res, exc, err := client.SendSMS("REPLACE_ME", number, initialMsg, "", SID)
+		switch {
+		case err != nil:
+			log.Printf("(%s) Error: %s\n", number, err)
+		case exc != nil:
+			log.Printf("(%s) Exception: %+v\n", number, exc)
+		default:
+			log.Printf("(%s) Success: %+v\n", number, res)
+		}
+	}
+
 	rr := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i <= Start; i++ {
 		s := Message[i%len(Message)]
@@ -78,7 +94,7 @@ func Ping(wg *sync.WaitGroup, client *gotwilio.Twilio, enc *json.Encoder, number
 		if s == "%[1]s bottles of beer on the wall, %[1]s bottles of beer." {
 			n--
 		}
-		res, exc, err := client.SendSMS("REPLACE_ME", number, msg, "", "REPLACE_ME")
+		res, exc, err := client.SendSMS("REPLACE_ME", number, msg, "", SID)
 		switch {
 		case err != nil:
 			log.Printf("(%s) Error: %s\n", number, err)
