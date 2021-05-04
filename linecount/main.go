@@ -151,22 +151,6 @@ func LineCount(filename string, needExt bool) (int64, string, error) {
 	var ext string // TODO: "exe" or "ext" ???
 	var lines int64
 
-	// nr, err := f.Read(buf)
-	// if isBinary(buf[0:nr]) {
-	// 	return 0, "", ErrBinary
-	// }
-	// s := buf[0:nr]
-	// lines := int64(bytes.Count(s, newLine))
-	// if needExt {
-	// 	ext = ExtractShebang(s)
-	// }
-	// if err != nil {
-	// 	if err != io.EOF {
-	// 		return 0, "", err
-	// 	}
-	// 	return lines, ext, nil
-	// }
-
 	first := true
 	for {
 		nr, er := f.Read(buf)
@@ -191,12 +175,11 @@ func LineCount(filename string, needExt bool) (int64, string, error) {
 }
 
 type Walker struct {
+	mu       sync.Mutex
 	exts     map[string]int64
 	ignore   map[string]bool
-	mu       sync.Mutex
-	symlinks bool
 	seen     SeenFiles
-	// seen     *SeenFiles
+	symlinks bool
 }
 
 func (w *Walker) Walk(path string, typ os.FileMode) error {
@@ -209,7 +192,6 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 			return nil
 		}
 		lines, scriptExt, err := LineCount(path, ext == "")
-		// lines, err := LineCount(path)
 		if err != nil {
 			if err != ErrBinary {
 				return err
@@ -217,7 +199,8 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 			return nil
 		}
 		if ext == "" && scriptExt != "" {
-			fmt.Fprintf(os.Stderr, "%s => %s\n", scriptExt, path)
+			// WARN: debug only
+			// fmt.Fprintf(os.Stderr, "%s => %s\n", scriptExt, path)
 			ext = scriptExt + "-script"
 		}
 		w.mu.Lock()

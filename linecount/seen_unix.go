@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os"
 	"sync"
 	"syscall"
 )
@@ -14,26 +13,25 @@ type fileKey struct {
 }
 
 type SeenFiles struct {
-	keys map[fileKey]struct{}
 	// we assume most files have not been seen so
 	// no need for a RWMutex
-	mu sync.Mutex
+	mu   sync.Mutex
+	keys map[fileKey]struct{}
 }
 
-func (s *SeenFiles) Seen(path string) bool {
+func (s *SeenFiles) Path(path string) bool {
 	// TODO (CEV): we can use syscall.Stat() directly
-	fi, err := os.Stat(path)
-	if err != nil {
+	var stat syscall.Stat_t
+	if syscall.Stat(path, &stat) != nil {
 		return false
 	}
-	stat := fi.Sys().(*syscall.Stat_t)
 	key := fileKey{
 		Dev: uint64(stat.Dev),
-		Ino: stat.Ino,
+		Ino: uint64(stat.Ino),
 	}
 	s.mu.Lock()
 	if s.keys == nil {
-		s.keys = make(map[fileKey]struct{})
+		s.keys = make(map[fileKey]struct{}, 1024)
 	}
 	_, ok := s.keys[key]
 	if !ok {

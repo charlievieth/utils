@@ -23,13 +23,11 @@ func (s *SeenFiles) Seen(path string) bool {
 	if err != nil {
 		return false
 	}
-	var ok bool
 	s.mu.Lock()
-	if s.seen != nil {
-		_, ok = s.seen[name]
-	} else {
+	if s.seen == nil {
 		s.seen = make(map[string]struct{})
 	}
+	_, ok := s.seen[name]
 	if !ok {
 		s.seen[name] = struct{}{}
 	}
