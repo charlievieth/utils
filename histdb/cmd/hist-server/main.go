@@ -12,12 +12,15 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"go.uber.org/zap"
 )
 
@@ -104,22 +107,25 @@ func (a StringArray) Value() (driver.Value, error) {
 }
 */
 type Request struct {
-	PPid       int    `json:"ppid"`
-	StatusCode int    `json:"status_code"`
-	HistoryID  int    `json:"history_id"` // TODO: do we need this?
-	SessionID  string `json:"session_id"` // TODO: use this or the PID?
-	Username   string `json:"username"`
-	// Time        time.Time `json:"time"`
-	Command []string `json:"command"`
+	PPid       int       `json:"ppid"`
+	StatusCode int       `json:"status_code"`
+	HistoryID  int       `json:"history_id"` // TODO: do we need this?
+	SessionID  string    `json:"session_id"` // TODO: use this or the PID?
+	Username   string    `json:"username"`
+	Command    string    `json:"command"`
+	Args       []string  `json:"args"`
+	Time       time.Time `json:"time"`
 }
 
 type DB struct {
 	db *sql.DB
+
+	sessionIDStmt *sql.Stmt
 }
 
 func NewDB(filename string) (*DB, error) {
 	// TODO: tune params
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?mode=rwc", filename))
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?mode=rwc", filename))
 	if err != nil {
 		return nil, err
 	}
@@ -127,10 +133,25 @@ func NewDB(filename string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
-	return &DB{db}, nil
+
+	sessionIDStmt, err := db.Prepare(`INSERT INTO session_ids DEFAULT VALUES;`)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &DB{db: db, sessionIDStmt: sessionIDStmt}, nil
 }
 
 func (d *DB) Close() error { return d.db.Close() }
+
+func (d *DB) NewSessionID() (int64, error) {
+	res, err := d.sessionIDStmt.Exec()
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
 
 func (d *DB) Insert(r *Record) error {
 	const query = `INSERT INTO history (
@@ -199,10 +220,51 @@ func RequestHandler_X(w http.ResponseWriter, r *http.Request) {
 		// ServerID:   req.ServerID,
 		Username:  req.Username,
 		CreatedAt: time.Now(),
-		Command:   req.Command[0],
-		Arguments: req.Command[1:],
+		// Command:   req.Command[0],
+		// Arguments: req.Command[1:],
 	}
 	_ = rec
+}
+
+// "command", args
+// "history_id", json_integer
+// "ppid", json_integer
+// "session_id", json_integer
+// "session_id", json_string
+// "status_code", json_integer
+// "username", json_string
+// "wd", json_string
+
+// WARN: remove
+type RawRecord2 struct {
+	SessionID  string `json:"session_id"`
+	HistoryID  int    `json:"history_id"`
+	PPid       int    `json:"ppid"`
+	Username   string `json:"username"`
+	WD         string `json:"wd"`
+	StatusCode int    `json:"status_code"`
+	Command    string `json:"command"` // CEV: use the raw string here
+}
+
+// WARN: remove
+func (r *RawRecord2) Validate() error {
+	if !json.Valid([]byte(r.Command)) {
+		return errors.New("invalid JSON")
+	}
+	return nil
+}
+
+// TODO: use this
+type Record2 struct {
+	ID int `json:"id"` //
+
+	SessionID  int      `json:"session_id"`
+	HistoryID  int      `json:"history_id"`
+	PPid       int      `json:"ppid"`
+	Username   string   `json:"username"`
+	WD         string   `json:"wd"`
+	StatusCode int      `json:"status_code"`
+	Command    []string `json:"command,omitempty"`
 }
 
 type Record struct {
@@ -257,11 +319,11 @@ func NotFound(w http.ResponseWriter, r *http.Request) {
 
 func Reflect(w http.ResponseWriter, r *http.Request) {
 	b, err := ioutil.ReadAll(r.Body)
+	r.Body.Close()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	r.Body.Close() // WARN
 
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, b, "", "    "); err != nil {
@@ -279,12 +341,6 @@ func HealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("okay\n"))
 	// WARN
 	fmt.Println(r.URL.String())
-}
-
-type Config struct {
-	UnixSocketAddr string
-	LogDir         string
-	Log            *zap.Logger
 }
 
 func (c *Config) Init() error {
@@ -393,7 +449,19 @@ func main() {
 	if err := CheckActive(&addr); err == nil {
 		fmt.Println("server already running")
 		return
+	} else {
+		e1 := err.(*url.Error)
+		fmt.Printf("Error 1: %#v  --  %s\n", err, err)
+		fmt.Printf("Error 2: %#v  --  %s\n", e1.Err, e1.Err)
+		e2 := e1.Err.(*net.OpError)
+		fmt.Printf("Error 3: %#v  --  %s\n", e2.Err, e2.Err)
+
+		e3 := e2.Err.(*os.SyscallError)
+		fmt.Printf("Error 3: %#v  --  %s\n", e3.Err, e3.Err)
+
+		fmt.Println("XXX:", errors.Is(err, syscall.ECONNREFUSED))
 	}
+	return
 
 	// Remove the old socket, if any.
 	if err := os.Remove(conf.UnixSocketAddr); !os.IsNotExist(err) {
@@ -406,6 +474,27 @@ func main() {
 	}
 	l.SetUnlinkOnClose(true)
 	defer l.Close()
+
+	// {
+	// 	for {
+	// 		conn, err := l.Accept()
+	// 		if err != nil {
+	// 			Fatal(err)
+	// 		}
+	// 		b, err := ioutil.ReadAll(conn)
+	// 		conn.Close()
+	// 		if err != nil {
+	// 			Fatal(err)
+	// 		}
+	// 		var buf bytes.Buffer
+	// 		if err := json.Indent(&buf, b, "", "    "); err != nil {
+	// 			Fatal(err)
+	// 			return
+	// 		}
+	// 		fmt.Printf("%s\n", &buf)
+	// 	}
+	// 	return
+	// }
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", NotFound)

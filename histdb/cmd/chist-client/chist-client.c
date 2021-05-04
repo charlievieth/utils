@@ -16,6 +16,7 @@
 
 #include <sys/param.h> // MAXPATHLEN
 #include <sys/time.h>  // gettimeofday, timeval
+// #include <sys/stat.h>  // stat
 
 #include <curl/curl.h>
 #include <jansson.h>
@@ -44,7 +45,7 @@ enum log_level_t {
 
 static enum log_level_t log_level = LOG_LEVEL_ERROR;
 
-static const char * chist_log_lvl_str(enum log_level_t lvl) {
+static const char * chist_log_level_str(enum log_level_t lvl) {
 	switch (lvl) {
 	case LOG_LEVEL_DEBUG:
 		return "DEBUG";
@@ -59,6 +60,60 @@ static const char * chist_log_lvl_str(enum log_level_t lvl) {
 	default:
 		return "UNKNOWN";
 	}
+}
+
+int chist_parse_log_level_xx(const char *str, enum log_level_t *lvl) {
+	char lower[6]; // strlen("FATAL")
+	size_t n = strlen(str);
+	if (n < strlen("INFO") || strlen("FATAL") < n) {
+		goto error;
+	}
+	for (int i = 0; i < (int)n; i++) {
+		lower[i] = tolower(str[i]);
+	}
+	lower[n] = '\0';
+
+	if (strcmp(lower, "DEBUG") == 0) {
+		*lvl = LOG_LEVEL_DEBUG;
+	} else if (strcmp(lower, "INFO") == 0) {
+		*lvl = LOG_LEVEL_INFO;
+	} else if (strcmp(lower, "WARN") == 0) {
+		*lvl = LOG_LEVEL_WARN;
+	} else if (strcmp(lower, "ERROR") == 0) {
+		*lvl = LOG_LEVEL_ERROR;
+	} else if (strcmp(lower, "FATAL") == 0) {
+		*lvl = LOG_LEVEL_FATAL;
+	} else {
+		goto error;
+	}
+
+	return 0;
+
+error:
+	*lvl = LOG_LEVEL_INFO;
+	return 1;
+}
+
+// TODO: use or remove
+//
+int chist_parse_log_level(const char *str, enum log_level_t *lvl) {
+	if (strcasecmp(str, "DEBUG")) {
+		*lvl = LOG_LEVEL_DEBUG;
+	} else if (strcasecmp(str, "INFO")) {
+		*lvl = LOG_LEVEL_INFO;
+	} else if (strcasecmp(str, "WARN")) {
+		*lvl = LOG_LEVEL_WARN;
+	} else if (strcasecmp(str, "ERROR")) {
+		*lvl = LOG_LEVEL_ERROR;
+	} else if (strcasecmp(str, "FATAL")) {
+		*lvl = LOG_LEVEL_FATAL;
+	} else {
+		*lvl = LOG_LEVEL_INFO;
+		goto error;
+	}
+	return 0;
+error:
+	return 1;
 }
 
 static void usage(FILE *stream) {
@@ -114,6 +169,29 @@ static void __attribute__((__noinline__)) chist_log_impl(
 	...
 ) __attribute__((__format__(__printf__, 4, 5)));
 
+
+// int file_exists(const char *name) {
+// 	struct stat buf;
+// 	return stat(name, &buf) == 0;
+// }
+
+static FILE *chist_log_output = NULL;
+
+int init_log_files(const char *log_dir) {
+	// chist_log_output[0] = stderr;
+
+	char *name = NULL;
+	asprintf(&name, "%s/client.log", log_dir);
+	chist_log_output = fopen(name, "w+");
+	free(name);
+
+	if (!chist_log_output) {
+		return 1; // WARN
+	}
+
+	return 0;
+}
+
 // TODO: log to file
 static void chist_log_impl(const char *file, int line, enum log_level_t lvl, const char *format, ...) {
 	char *bufp = NULL;
@@ -128,7 +206,7 @@ static void chist_log_impl(const char *file, int line, enum log_level_t lvl, con
 	if (chist_timestamp(ts, sizeof(ts)) <= 0) {
 		strcpy(ts, "TIMESTAMP_ERROR");
 	}
-	const char *level = chist_log_lvl_str(lvl);
+	const char *level = chist_log_level_str(lvl);
 	fprintf(mstream, "%s\t%s\t%s:%d\t", ts, level, file, line);
 
 	va_list args;
@@ -471,13 +549,22 @@ int parse_options(struct chist_options *opts) {
 	json_error_t error;
 	json_t *obj = json_load_file("test_options.json", 0, &error);
 
-	// json_obj
+	const char *lvl = json_string_value(json_object_get(obj, "log_level"));
+	printf("log_level: %s\n", lvl);
 	// test_options.json
 	return 0;
 }
 
 int main(int argc, char *argv[]) {
 	// WARN WARN WARN
+	// {
+	// 	struct chist_options opts;
+	// 	return parse_options(&opts);
+	// }
+
+	// WARN WARN WARN
+	// static_assert(1 == 2, "WARN: fix option parsing or remove!!");
+
 	return xmain(argc, argv);
 
 	// WARN

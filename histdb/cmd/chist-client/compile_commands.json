@@ -1,0 +1,27 @@
+[
+    {
+        "arguments": [
+            "gcc",
+            "-c",
+            "-O1",
+            "-std=c11",
+            "-I/usr/local/Cellar/jansson/2.13.1/include",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-pedantic-errors",
+            "-Wshadow",
+            "-Wswitch-enum",
+            "-Wcast-qual",
+            "-Wpointer-arith",
+            "-Wstrict-overflow=5",
+            "-Wcast-align",
+            "-Wno-gnu-zero-variadic-macro-arguments",
+            "-o",
+            "chist-client",
+            "chist-client.c"
+        ],
+        "directory": "/Users/cvieth/go/src/github.com/charlievieth/utils/histdb/cmd/chist-client",
+        "file": "chist-client.c"
+    }
+]
