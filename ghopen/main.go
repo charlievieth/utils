@@ -79,6 +79,11 @@ func GitDir(path string) (string, error) {
 	return "", fmt.Errorf("not a git directory: %s", path)
 }
 
+func IsTopLevelDir(gitdir, path string) bool {
+	rel, err := filepath.Rel(gitdir, path)
+	return err == nil && rel == "."
+}
+
 func TrimPathPrefix(path, prefix string) string {
 	if strings.HasPrefix(path, prefix) {
 		path = strings.TrimPrefix(path, prefix)
@@ -161,7 +166,12 @@ func realMain() error {
 		repoPath := TrimPathPrefix(file.Path, dir)
 		if file.Info.IsDir() {
 			if branch != "" {
-				url = fmt.Sprintf("%s/tree/%s/%s", url, branch, repoPath)
+				// Don't use '/tree/' when opening the top-level directory
+				if branch == "master" && IsTopLevelDir(dir, file.Path) {
+					url = fmt.Sprintf("%s/%s", url, repoPath)
+				} else {
+					url = fmt.Sprintf("%s/tree/%s/%s", url, branch, repoPath)
+				}
 			} else {
 				url = fmt.Sprintf("%s/tree/%s/%s", url, sha, repoPath)
 			}
