@@ -38,6 +38,10 @@ linecount:
 subl-completion:
 	@cd ./subl-completion && go install
 
+.PHONY: watchman-completion
+watchman-completion:
+	@cd ./watchman-completion && go install
+
 # WARN: this is mostly here to document how to do this manually
 .PHONY: install-subl-completion
 install-subl-completion: subl-completion
@@ -67,4 +71,4 @@ pathutils: extname gobasename godirname
 # Install frequently used utilities
 .PHONY: all
 all: escape-regex format-json frequency ghopen godu gouniq gowd \
-	isbinary linecount subl-completion timestamp pathutils
+	isbinary linecount subl-completion timestamp pathutils watchman-completion
