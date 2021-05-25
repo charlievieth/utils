@@ -154,15 +154,23 @@ func realMain() error {
 		if err != nil {
 			return err
 		}
-		sha, err := GitSHA(wd)
-		if err != nil {
-			return err
-		}
 		dir, err := GitDir(wd)
 		if err != nil {
 			return err
 		}
-		branch, _ := GitBranch(wd)
+		var branch string
+		if *forceMaster {
+			branch = "master"
+		} else {
+			branch, _ = GitBranch(wd)
+		}
+		var sha string
+		if branch == "" {
+			sha, err = GitSHA(wd)
+			if err != nil {
+				return err
+			}
+		}
 		repoPath := TrimPathPrefix(file.Path, dir)
 		if file.Info.IsDir() {
 			if branch != "" {
@@ -190,6 +198,8 @@ func realMain() error {
 
 	return nil
 }
+
+var forceMaster = flag.Bool("m", false, "use master branch")
 
 func main() {
 	flag.Usage = func() {
