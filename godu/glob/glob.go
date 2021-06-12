@@ -226,7 +226,7 @@ type Token int
 const (
 	Literal    Token = iota
 	Any              // '?'
-	ZeroOrMore       // '*'
+	ZeroOrMore       // '*' // TODO: rename to Star
 	Range            // '['
 )
 
@@ -270,6 +270,13 @@ func (cs chunks) literal() string {
 	return ""
 }
 
+func (cs chunks) contains() string {
+	if cs.match(ZeroOrMore, Literal, ZeroOrMore) {
+		return cs[1].lit
+	}
+	return ""
+}
+
 func (cs chunks) prefix() string {
 	if cs.match(Literal, ZeroOrMore) {
 		return cs[0].lit
@@ -296,6 +303,16 @@ type asciiRange struct {
 func (r *asciiRange) Match(s string) int {
 	if len(s) > 0 && r.chars[s[0]] {
 		return 1
+	}
+	return -1
+}
+
+// Find the match
+func (r *asciiRange) MatchAny(s string) int {
+	for i := 0; i < len(s); i++ {
+		if r.chars[s[i]] {
+			return i + 1
+		}
 	}
 	return -1
 }
@@ -456,6 +473,10 @@ func parse(pattern string) (chunks, error) {
 			for ; i < len(pattern); i++ {
 				c := pattern[i]
 				switch c {
+				case '[':
+					if n := isNamedClass(pattern[i:]); n != -1 {
+						i += n
+					}
 				case '\\':
 					i++
 					if i == len(pattern) {
@@ -463,10 +484,6 @@ func parse(pattern string) (chunks, error) {
 					}
 				case ']':
 					break RangeLoop
-				case '[':
-					if n := isNamedClass(pattern[i:]); n != -1 {
-						i += n
-					}
 				}
 			}
 			if i == len(pattern) || pattern[i] != ']' {
@@ -495,28 +512,98 @@ func parse(pattern string) (chunks, error) {
 	return chunks, nil
 }
 
+func matchAny(s string) int {
+	if len(s) != 0 {
+		return 1
+	}
+	return -1
+}
+
+type matchPrefix string
+
+func (m matchPrefix) Match(s string) int {
+	if strings.HasPrefix(s, string(m)) {
+		return len(s)
+	}
+	return -1
+}
+
+type matchSuffix string
+
+func (m matchSuffix) Match(s string) int {
+	if strings.HasSuffix(s, string(m)) {
+		return len(s)
+	}
+	return -1
+}
+
+type matchContains string
+
+func (m matchContains) Match(s string) int {
+	if i := strings.Index(s, string(m)); i != -1 {
+		return i + len(m)
+	}
+	return -1
+}
+
+type MatchFn func(string) int
+
 type Glob struct {
 	pattern   string
-	negate    bool
+	negated   bool
 	hashSlash bool // must use filepath.Match
 
-	literal         string
-	basenameLiteral string
-	extension       string
-	prefix          string
+	// A pattern matches if and only if the entire file path matches this
+	// literal string.
+	literal string
+
+	// TODO: remove
+	//
+	// A pattern matches if and only if the file path's basename matches this
+	// literal string.
+	// basenameLiteral string
+
+	// A pattern matches if and only if the file path's extension matches this
+	// literal string.
+	extension string
+
+	// A pattern matches if and only if this prefix literal is a prefix of the
+	// candidate file path.
+	prefix string
+
+	// A pattern matches if and only if this file path contains this literal.
+	contains string
+
+	fns []MatchFn
 }
 
-func (g *Glob) Literal() string {
-	return ""
+// TODO: remove
+//
+// func (g *Glob) BasenameLiteral() string { return g.basenameLiteral }
+
+func (g *Glob) Literal() string   { return g.literal }
+func (g *Glob) Extension() string { return g.extension }
+func (g *Glob) Prefix() string    { return g.prefix }
+
+func (g *Glob) match(base string) bool {
+	if g.extension != "" {
+		return strings.HasSuffix(base, g.extension)
+	}
+	if g.prefix != "" {
+		return strings.HasPrefix(base, g.prefix)
+	}
+	if g.literal != "" {
+		return base == g.literal
+	}
+	if g.contains != "" {
+		return strings.Contains(base, g.contains)
+	}
+
+	return false
 }
-func (g *Glob) BasenameLiteral() string {
-	return ""
-}
-func (g *Glob) Extension() string {
-	return ""
-}
-func (g *Glob) Prefix() string {
-	return ""
+
+func (g *Glob) Match(base string) bool {
+	return g.match(base) == !g.negated
 }
 
 func matchChunks(chunks []chunk, toks ...Token) bool {
@@ -550,7 +637,7 @@ func New(pattern string) (*Glob, error) {
 
 	g := &Glob{
 		pattern: pattern,
-		negate:  negate,
+		negated: negate,
 	}
 	if s := chunks.literal(); s != "" {
 		g.literal = s
@@ -564,10 +651,85 @@ func New(pattern string) (*Glob, error) {
 		g.extension = s
 		return g, nil
 	}
+	if s := chunks.contains(); s != "" {
+		g.contains = s
+		return g, nil
+	}
+
+	var last Token
+	if len(chunks) > 0 && chunks[0].tok == Literal {
+		last = Literal
+		g.fns = append(g.fns, matchPrefix(chunks[0].lit).Match)
+		chunks = chunks[1:]
+	}
+	// WARN: we want to match the suffix early, but this function
+	// won't work for it because we'll skip all other matchers.
+	//
+	// if len(chunks) > 0 && chunks[len(chunks)-1].tok == Literal {
+	// 	last = Literal
+	// 	g.fns = append(g.fns, matchSuffix(chunks[0].lit).Match)
+	// 	chunks = chunks[:len(chunks)-1]
+	// }
+
+	// WARN: we need to match patterns like: `pfx*?abc?*sfx`
+	//
+	// Options:
+	// 	1. Join matchers between '*', here: `?abc?`
+
+	inStar := false
+	for i, cs := range chunks {
+		switch cs.tok {
+		case Literal:
+			if i == len(chunks)-1 {
+				g.fns = append(g.fns, matchSuffix(cs.lit).Match)
+				break
+			}
+			switch last {
+			case Literal:
+				return nil, errors.New("consecutive Literal chunks") // WARN: fix this error
+			case Any:
+				// WARN: this will break with '*?xyz' => 'abcxyz'
+				// ?abc
+				g.fns = append(g.fns, matchPrefix(cs.lit).Match)
+			case ZeroOrMore:
+				// *abc
+				g.fns = append(g.fns, matchContains(cs.lit).Match)
+			case Range:
+				// [ab]xyz
+				g.fns = append(g.fns, matchPrefix(cs.lit).Match)
+			}
+		case Any:
+			g.fns = append(g.fns, matchAny)
+		case ZeroOrMore:
+			// WARN
+			inStar = true
+
+		case Range:
+			r, err := parseRange(cs.lit)
+			if err != nil {
+				return nil, err
+			}
+			if last == ZeroOrMore {
+				g.fns = append(g.fns, r.MatchAny)
+			} else {
+				g.fns = append(g.fns, r.Match)
+			}
+		}
+		last = cs.tok
+	}
+	_ = last
+
 	return g, nil
 }
 
 func main() {
+	{
+		s := "abcFooxzy"
+		m := matchContains("zy")
+		i := m.Match(s)
+		fmt.Println(i, s[i:])
+		return
+	}
 	r, err := parseRange("[^[a-zABC[:digit:]!@]")
 	if err != nil {
 		Fatal(err)
