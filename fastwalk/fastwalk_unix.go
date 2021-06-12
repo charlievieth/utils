@@ -20,7 +20,7 @@ const blockSize = 8 << 10
 // value used to represent a syscall.DT_UNKNOWN Dirent.Type.
 const unknownFileMode os.FileMode = os.ModeNamedPipe | os.ModeSocket | os.ModeDevice
 
-func readDir(dirName string, fn func(dirName, entName string, typ os.FileMode) error) error {
+func (w *walker) readDir(dirName string, fn func(dirName, entName string, typ os.FileMode) error) error {
 	fd, err := syscall.Open(dirName, 0, 0)
 	if err != nil {
 		return &os.PathError{Op: "open", Path: dirName, Err: err}
@@ -32,6 +32,7 @@ func readDir(dirName string, fn func(dirName, entName string, typ os.FileMode) e
 	bufp := 0                      // starting read position in buf
 	nbuf := 0                      // end valid data in buf
 	skipFiles := false
+	hashAll := w.seen != nil
 	for {
 		if bufp >= nbuf {
 			bufp = 0
@@ -63,6 +64,9 @@ func readDir(dirName string, fn func(dirName, entName string, typ os.FileMode) e
 			typ = fi.Mode() & os.ModeType
 		}
 		if skipFiles && typ.IsRegular() {
+			continue
+		}
+		if hashAll && w.seen.SeenAt(fd, name) {
 			continue
 		}
 		if err := fn(dirName, name, typ); err != nil {

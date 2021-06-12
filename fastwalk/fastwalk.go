@@ -149,6 +149,8 @@ type walker struct {
 	workc    chan walkItem // to workers
 	enqueuec chan walkItem // from workers
 	resc     chan error    // from workers
+
+	seen *seenFiles // track files when walking links
 }
 
 type walkItem struct {
@@ -197,5 +199,5 @@ func (w *walker) walk(root string, runUserCallback bool) error {
 		}
 	}
 
-	return readDir(root, w.onDirEnt)
+	return w.readDir(root, w.onDirEnt)
 }
