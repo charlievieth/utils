@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"sort"
@@ -96,7 +98,9 @@ func (f filesByNameCase) Less(i, j int) bool {
 }
 
 type Walker struct {
-	Size Size
+	Size    Size
+	Match   GlobSet
+	Exclude GlobSet
 }
 
 func (w *Walker) Walk(path string, typ os.FileMode) error {
@@ -300,6 +304,44 @@ func readdirnames(path string) ([]string, error) {
 	return names, err
 }
 
+// TODO: add exclusion logic !!!
+/*
+type Exclude struct {
+	names   []string
+	namesRe []*regexp.Regexp
+	paths   []string
+	pathsRe []*regexp.Regexp
+}
+
+func (e *Exclude) Name(name string) bool {
+	for _, pattern := range e.names {
+		if ok, _ := filepath.Match(pattern, name); ok {
+			return true
+		}
+	}
+	for _, re := range e.namesRe {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Exclude) Path(path string) bool {
+	for _, pattern := range e.paths {
+		if ok, _ := filepath.Match(pattern, path); ok {
+			return true
+		}
+	}
+	for _, re := range e.pathsRe {
+		if re.MatchString(path) {
+			return true
+		}
+	}
+	return false
+}
+*/
+
 func main() {
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to `file`")
 	paths, flags := parseFlags()
@@ -334,6 +376,90 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(2)
 	}
+}
+
+/*
+type Value interface {
+    String() string
+    Set(string) error
+}
+*/
+
+type Glob struct {
+	pattern string
+	negate  bool
+}
+
+func (g Glob) String() string {
+	return fmt.Sprintf("{Pattern: %q Negate: %t}", g.pattern, g.negate)
+}
+
+func NewGlob(s string) (*Glob, error) {
+	negate := strings.HasPrefix(s, "!")
+	s = strings.TrimPrefix(s, "!")
+	if s == "" {
+		return nil, errors.New("empty pattern")
+	}
+	if _, err := filepath.Match(s, ""); err != nil {
+		return nil, err
+	}
+	return &Glob{pattern: s, negate: negate}, nil
+}
+
+func (g *Glob) Match(name string) bool {
+	ok, err := filepath.Match(g.pattern, name)
+	return err == nil && ok == !g.negate
+}
+
+type GlobSet struct {
+	globs []*Glob
+
+	// match   []string
+	// exclude []string
+}
+
+// func (g *GlobSet) String() string {
+// 	return fmt.Sprintf("%q", g.patterns)
+// }
+
+func (gs *GlobSet) Set(s string) error {
+	g, err := NewGlob(s)
+	if err != nil {
+		return err
+	}
+	gs.globs = append(gs.globs, g)
+	return nil
+
+	// if s == "" {
+	// 	return errors.New("empty pattern")
+	// }
+	// if _, err := filepath.Match(s, ""); err != nil {
+	// 	return err
+	// }
+	// g.patterns = append(g.patterns, s)
+	// return nil
+}
+
+func (g *GlobSet) Match(name string) bool {
+	if g == nil || len(g.globs) == 0 {
+		return true
+	}
+	for _, g := range g.globs {
+		if !g.Match(name) {
+			return false
+		}
+	}
+	return false
+
+	// if g == nil || len(g.patterns) == 0 {
+	// 	return true
+	// }
+	// for _, p := range g.patterns {
+	// 	if ok, _ := filepath.Match(p, name); ok {
+	// 		return true
+	// 	}
+	// }
+	// return false
 }
 
 /*

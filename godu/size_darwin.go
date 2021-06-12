@@ -30,6 +30,8 @@ import (
 type buffer struct {
 	// make sure the buffer is exactly 4096 bytes in size
 	buf [4096 - unsafe.Sizeof([]byte{})]byte
+
+	// large file name buffer
 	tmp []byte
 }
 
@@ -63,11 +65,15 @@ var bufPool = sync.Pool{
 //
 // Nasty hack to avoid using the libc_lstat64_trampoline, which is dog slow.
 func GetFileSize(path string) (int64, error) {
+	// AUE_LSTAT64	ALL	{ int lstat64(user_addr_t path, user_addr_t ub); }
+	const SYS_LSTAT64 = 340
+
 	// TODO: use fstat() and the FD in fastwalk
 	// TODO: we can also just call stat directly ???
 
 	p := bufPool.Get().(*buffer)
 	p.WritePath(path)
+
 	n := C.file_size((*C.char)(p.Pointer()))
 	p.Free()
 	return int64(n), nil
@@ -98,7 +104,6 @@ func GetFileSizeAt(fd int, path string, followLinks bool) (int64, error) {
 	_, _, e1 := syscall.Syscall6(
 		SYS_FSTATAT64,
 		uintptr(fd),
-		// uintptr(unsafe.Pointer(&b[0])),
 		uintptr(p.Pointer()),
 		uintptr(unsafe.Pointer(&stat)),
 		uintptr(AT_SYMLINK_NOFOLLOW), // WARN
