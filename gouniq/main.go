@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/charlievieth/utils/pathutils"
+	"golang.org/x/term"
 )
 
 type Reader struct {
@@ -88,9 +91,10 @@ func UniqLines(in io.Reader, delim byte) ([]string, error) {
 
 func StreamLines(in io.Reader, out io.Writer, delim byte) error {
 	r := Reader{
-		b:   bufio.NewReader(in),
+		b:   bufio.NewReaderSize(in, 8192),
 		buf: make([]byte, 128),
 	}
+	w := bufio.NewWriterSize(out, 8192)
 	seen := make(map[string]struct{})
 	var err error
 	for {
@@ -99,7 +103,7 @@ func StreamLines(in io.Reader, out io.Writer, delim byte) error {
 		if len(b) != 0 {
 			if _, ok := seen[string(b)]; !ok {
 				seen[string(b)] = struct{}{}
-				_, ew := out.Write(append(b, '\n'))
+				_, ew := w.Write(append(b, '\n'))
 				if ew != nil {
 					if er == nil || er == io.EOF {
 						er = ew
@@ -108,13 +112,14 @@ func StreamLines(in io.Reader, out io.Writer, delim byte) error {
 			}
 		}
 		if er != nil {
-			if er != io.EOF {
-				err = er
-			}
+			err = er
 			break
 		}
 	}
-	return err
+	if err != io.EOF {
+		return err
+	}
+	return w.Flush()
 }
 
 func processFile(name string) error {
@@ -144,4 +149,132 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+// type Set struct {
+// 	m map[string]struct{}
+// }
+
+// func (s *Set) Add(b []byte) bool {
+// 	_, found := s.m[string(b)]
+// 	if !found {
+// 		s.m[string(b)] = struct{}{}
+// 	}
+// 	return !found
+// }
+
+func processStdin(trim, lineBuffer bool, delim byte) error {
+	var (
+		bw *bufio.Writer
+		w  io.Writer = os.Stdout
+	)
+	if !lineBuffer {
+		bw = bufio.NewWriter(os.Stdout)
+		w = bw
+	}
+
+	r := pathutils.NewReader(bufio.NewReaderSize(os.Stdin, 8192))
+	seen := make(map[string]struct{}, 128)
+
+	var err error
+	for {
+		b, er := r.ReadBytes(delim)
+		if trim {
+			b = trimSpace(b)
+		}
+		if len(b) != 0 {
+			if _, ok := seen[string(b)]; !ok {
+				seen[string(b)] = struct{}{}
+				if _, ew := w.Write(append(b, '\n')); ew != nil {
+					if er == nil || er == io.EOF {
+						er = ew
+					}
+				}
+			}
+		}
+		if er != nil {
+			err = er
+			break
+		}
+	}
+	if bw != nil {
+		bw.Flush()
+	}
+	return err
+}
+
+type Line struct {
+	N    int
+	Data []byte
+}
+
+// CEV: this is a bad/hard idea
+/*
+func processStdinParallel(trim, lineBuffer bool, delim byte) error {
+	var (
+		bw *bufio.Writer
+		w  io.Writer = os.Stdout
+	)
+	if !lineBuffer {
+		bw = bufio.NewWriter(os.Stdout)
+		w = bw
+	}
+
+	var lines []*Line
+	numCPU := runtime.NumCPU()
+	if numCPU > 4 {
+		numCPU--
+	}
+	ch := make(chan *Line, numCPU*8)
+	for i := 0; i < numCPU; i++ {
+		go func() {
+			for ll := range ch {
+
+			}
+		}()
+	}
+
+	r := pathutils.NewReader(bufio.NewReaderSize(os.Stdin, 8192))
+	seen := make(map[string]struct{}, 128)
+
+	var err error
+	for {
+		b, er := r.ReadBytes(delim)
+		if trim {
+			b = trimSpace(b)
+		}
+		if len(b) != 0 {
+			if _, ok := seen[string(b)]; !ok {
+				seen[string(b)] = struct{}{}
+				if _, ew := w.Write(append(b, '\n')); ew != nil {
+					if er == nil || er == io.EOF {
+						er = ew
+					}
+				}
+			}
+		}
+		if er != nil {
+			err = er
+			break
+		}
+	}
+	if bw != nil {
+		bw.Flush()
+	}
+	return err
+}
+*/
+
+func xmain() {
+	// flag.Usage = func() {
+	// 	fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
+	// 	flag.PrintDefaults()
+	// }
+	trimspace := flag.Bool("s", false, "Trim leading and trailing whitespace form lines.")
+	zeroDelim := flag.Bool("0", false, "Lines are 0/NULL terminated.")
+	isTerm := term.IsTerminal(2)
+
+	_ = trimspace
+	_ = zeroDelim
+	_ = isTerm
 }
