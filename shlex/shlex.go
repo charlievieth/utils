@@ -182,8 +182,8 @@ Loop:
 			}
 			class := token.Classify(nextchar)
 			switch class {
-			case token.None:
-				s.debugf("token.None") // WARN
+			// case token.None:
+			// s.debugf("token.None") // WARN
 			case token.Whitespace:
 				s.debugf("shlex: I see whitespace in whitespace state") // WARN
 				if s.token.Len() > 0 || (s.Posix && quoted) {
@@ -389,7 +389,9 @@ func (s *Shlex) Split() ([]string, error) {
 }
 
 func Split(s string, posix bool) ([]string, error) {
-	return ShlexFromString(s).Split()
+	sh := ShlexFromString(s)
+	sh.WhitespaceSplit = true
+	return sh.Split()
 }
 
 func main() {
