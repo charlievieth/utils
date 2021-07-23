@@ -67,6 +67,7 @@ type Shlex struct {
 	Posix            bool // TODO: default to true
 	WhitespaceSplit  bool // TODO: default to true
 	PunctuationChars bool
+	Commenters       bool
 }
 
 func (s *Shlex) Reset(r io.RuneReader) {
@@ -123,15 +124,24 @@ func (s *Shlex) isWord(r rune) bool {
 	return token.IsWord(r)
 }
 
+func (s *Shlex) isComment(r rune) bool {
+	return s.Commenters && token.IsComment(r)
+}
+
 func (s *Shlex) isPunctuation(r rune) bool {
 	return s.PunctuationChars && token.IsPunctuation(r)
 }
 
 func (s *Shlex) classify(r rune) token.Token {
 	c := token.Classify(r)
-	if c == token.Punctuation && !s.PunctuationChars {
+	if !s.PunctuationChars && c == token.Punctuation {
+		c = token.None
+	} else if !s.Commenters && c == token.Comment {
 		c = token.None
 	}
+	// if c == token.Punctuation && !s.PunctuationChars {
+	// 	c = token.None
+	// }
 	return c
 }
 
@@ -180,7 +190,7 @@ Loop:
 				s.state = 0
 				break Loop
 			}
-			class := token.Classify(nextchar)
+			class := s.classify(nextchar)
 			switch class {
 			// case token.None:
 			// s.debugf("token.None") // WARN
@@ -192,6 +202,7 @@ Loop:
 					continue Loop
 				}
 			case token.Comment:
+				s.debugf("READLINE")
 				_ = s.readline() // WARN: handle error
 				s.lineno++
 			case token.Word:
@@ -285,7 +296,8 @@ Loop:
 					} else {
 						continue Loop
 					}
-				case token.IsComment(nextchar):
+				case s.isComment(nextchar):
+					s.debugf("READLINE")
 					s.readline() // WARN: check error
 					s.lineno++
 					if s.Posix {
