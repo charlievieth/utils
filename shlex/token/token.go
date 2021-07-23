@@ -1,4 +1,4 @@
-package main
+package token
 
 //go:generate stringer -type=Token
 
@@ -21,7 +21,7 @@ var tokens = [128]Token{
 	'\'': Quote, '"': Quote, // WARN: '"' is also an EscapedQuote
 	'\\': Escape,
 
-	' ': Whitespace, '\t': Whitespace, '\r': Whitespace, '\n',
+	' ': Whitespace, '\t': Whitespace, '\r': Whitespace, '\n': Whitespace,
 
 	'(': Punctuation, ')': Punctuation, ';': Punctuation, '<': Punctuation,
 	'>': Punctuation, '|': Punctuation, '&': Punctuation,
@@ -37,7 +37,26 @@ var tokens = [128]Token{
 	'4': Word, '5': Word, '6': Word, '7': Word, '8': Word, '9': Word, '_': Word,
 }
 
+func IsComment(r rune) bool      { return r == '#' }
+func IsEscape(r rune) bool       { return r == '\\' }
+func IsQuote(r rune) bool        { return r == '\'' || r == '"' }
 func IsEscapedQuote(r rune) bool { return r == '"' }
+
+func IsWhitespace(r rune) bool {
+	switch r {
+	case ' ', '\t', '\r', '\n':
+		return true
+	}
+	return false
+}
+
+func IsPunctuation(r rune) bool {
+	switch r {
+	case '(', ')', ';', '<', '>', '|', '&':
+		return true
+	}
+	return false
+}
 
 func isPosixWordChar(r rune) bool {
 	switch r {
@@ -51,14 +70,14 @@ func isPosixWordChar(r rune) bool {
 	return false
 }
 
-func IsPosixWordChar(r rune) bool {
+func IsPosixWord(r rune) bool {
 	if uint32(r) < uint32(len(tokens)) {
 		return tokens[r] == Word
 	}
 	return isPosixWordChar(r)
 }
 
-func IsWordChar(r rune) bool {
+func IsWord(r rune) bool {
 	return uint32(r) < uint32(len(tokens)) && tokens[r] == Word
 }
 
@@ -71,33 +90,4 @@ func Classify(r rune) Token {
 		return Word
 	}
 	return None
-}
-
-func main() {
-	// fmt.Println(unsafe.Sizeof(tokens), unsafe.Sizeof(int64(1)),
-	// 	unsafe.Sizeof(tokens)/unsafe.Sizeof(int64(1)))
-	// return
-
-	// type Pair struct {
-	// 	Char  byte
-	// 	Token Token
-	// }
-	// // var pairs []Pair
-
-	// for i := 0; i < len(tokens); i++ {
-	// 	n := 0
-	// 	for ; i < len(tokens) && n < 6; i++ {
-	// 		if tokens[i] != None {
-	// 			fmt.Printf("'%c': %s, ", rune(i), tokens[i].String())
-	// 			n++
-	// 		}
-	// 	}
-	// 	fmt.Println()
-	// }
-
-	// for c, t := range tokens {
-	// 	if t != None {
-	// 		pairs = append(pairs, Pair{c, t})
-	// 	}
-	// }
 }

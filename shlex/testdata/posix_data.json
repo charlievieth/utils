@@ -1,0 +1,428 @@
+[
+    {
+        "input": "x",
+        "output": [
+            "x"
+        ]
+    },
+    {
+        "input": "foo bar",
+        "output": [
+            "foo",
+            "bar"
+        ]
+    },
+    {
+        "input": " foo bar",
+        "output": [
+            "foo",
+            "bar"
+        ]
+    },
+    {
+        "input": " foo bar ",
+        "output": [
+            "foo",
+            "bar"
+        ]
+    },
+    {
+        "input": "foo   bar    bla     fasel",
+        "output": [
+            "foo",
+            "bar",
+            "bla",
+            "fasel"
+        ]
+    },
+    {
+        "input": "x y  z              xxxx",
+        "output": [
+            "x",
+            "y",
+            "z",
+            "xxxx"
+        ]
+    },
+    {
+        "input": "\\x bar",
+        "output": [
+            "x",
+            "bar"
+        ]
+    },
+    {
+        "input": "\\ x bar",
+        "output": [
+            " x",
+            "bar"
+        ]
+    },
+    {
+        "input": "\\ bar",
+        "output": [
+            " bar"
+        ]
+    },
+    {
+        "input": "foo \\x bar",
+        "output": [
+            "foo",
+            "x",
+            "bar"
+        ]
+    },
+    {
+        "input": "foo \\ x bar",
+        "output": [
+            "foo",
+            " x",
+            "bar"
+        ]
+    },
+    {
+        "input": "foo \\ bar",
+        "output": [
+            "foo",
+            " bar"
+        ]
+    },
+    {
+        "input": "foo \"bar\" bla",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "\"foo\" \"bar\" \"bla\"",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "\"foo\" bar \"bla\"",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "\"foo\" bar bla",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "foo 'bar' bla",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "'foo' 'bar' 'bla'",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "'foo' bar 'bla'",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "'foo' bar bla",
+        "output": [
+            "foo",
+            "bar",
+            "bla"
+        ]
+    },
+    {
+        "input": "blurb foo\"bar\"bar\"fasel\" baz",
+        "output": [
+            "blurb",
+            "foobarbarfasel",
+            "baz"
+        ]
+    },
+    {
+        "input": "blurb foo'bar'bar'fasel' baz",
+        "output": [
+            "blurb",
+            "foobarbarfasel",
+            "baz"
+        ]
+    },
+    {
+        "input": "\"\"",
+        "output": [
+            ""
+        ]
+    },
+    {
+        "input": "''",
+        "output": [
+            ""
+        ]
+    },
+    {
+        "input": "foo \"\" bar",
+        "output": [
+            "foo",
+            "",
+            "bar"
+        ]
+    },
+    {
+        "input": "foo '' bar",
+        "output": [
+            "foo",
+            "",
+            "bar"
+        ]
+    },
+    {
+        "input": "foo \"\" \"\" \"\" bar",
+        "output": [
+            "foo",
+            "",
+            "",
+            "",
+            "bar"
+        ]
+    },
+    {
+        "input": "foo '' '' '' bar",
+        "output": [
+            "foo",
+            "",
+            "",
+            "",
+            "bar"
+        ]
+    },
+    {
+        "input": "\\\"",
+        "output": [
+            "\""
+        ]
+    },
+    {
+        "input": "\"\\\"\"",
+        "output": [
+            "\""
+        ]
+    },
+    {
+        "input": "\"foo\\ bar\"",
+        "output": [
+            "foo\\ bar"
+        ]
+    },
+    {
+        "input": "\"foo\\\\ bar\"",
+        "output": [
+            "foo\\ bar"
+        ]
+    },
+    {
+        "input": "\"foo\\\\ bar\\\"\"",
+        "output": [
+            "foo\\ bar\""
+        ]
+    },
+    {
+        "input": "\"foo\\\\\" bar\\\"",
+        "output": [
+            "foo\\",
+            "bar\""
+        ]
+    },
+    {
+        "input": "\"foo\\\\ bar\\\" dfadf\"",
+        "output": [
+            "foo\\ bar\" dfadf"
+        ]
+    },
+    {
+        "input": "\"foo\\\\\\ bar\\\" dfadf\"",
+        "output": [
+            "foo\\\\ bar\" dfadf"
+        ]
+    },
+    {
+        "input": "\"foo\\\\\\x bar\\\" dfadf\"",
+        "output": [
+            "foo\\\\x bar\" dfadf"
+        ]
+    },
+    {
+        "input": "\"foo\\x bar\\\" dfadf\"",
+        "output": [
+            "foo\\x bar\" dfadf"
+        ]
+    },
+    {
+        "input": "\\'",
+        "output": [
+            "'"
+        ]
+    },
+    {
+        "input": "'foo\\ bar'",
+        "output": [
+            "foo\\ bar"
+        ]
+    },
+    {
+        "input": "'foo\\\\ bar'",
+        "output": [
+            "foo\\\\ bar"
+        ]
+    },
+    {
+        "input": "\"foo\\\\\\x bar\\\" df'a\\ 'df\"",
+        "output": [
+            "foo\\\\x bar\" df'a\\ 'df"
+        ]
+    },
+    {
+        "input": "\\\"foo",
+        "output": [
+            "\"foo"
+        ]
+    },
+    {
+        "input": "\\\"foo\\x",
+        "output": [
+            "\"foox"
+        ]
+    },
+    {
+        "input": "\"foo\\x\"",
+        "output": [
+            "foo\\x"
+        ]
+    },
+    {
+        "input": "\"foo\\ \"",
+        "output": [
+            "foo\\ "
+        ]
+    },
+    {
+        "input": "foo\\ xx",
+        "output": [
+            "foo xx"
+        ]
+    },
+    {
+        "input": "foo\\ x\\x",
+        "output": [
+            "foo xx"
+        ]
+    },
+    {
+        "input": "foo\\ x\\x\\\"",
+        "output": [
+            "foo xx\""
+        ]
+    },
+    {
+        "input": "\"foo\\ x\\x\"",
+        "output": [
+            "foo\\ x\\x"
+        ]
+    },
+    {
+        "input": "\"foo\\ x\\x\\\\\"",
+        "output": [
+            "foo\\ x\\x\\"
+        ]
+    },
+    {
+        "input": "\"foo\\ x\\x\\\\\"\"foobar\"",
+        "output": [
+            "foo\\ x\\x\\foobar"
+        ]
+    },
+    {
+        "input": "\"foo\\ x\\x\\\\\"\\'\"foobar\"",
+        "output": [
+            "foo\\ x\\x\\'foobar"
+        ]
+    },
+    {
+        "input": "\"foo\\ x\\x\\\\\"\\'\"fo'obar\"",
+        "output": [
+            "foo\\ x\\x\\'fo'obar"
+        ]
+    },
+    {
+        "input": "\"foo\\ x\\x\\\\\"\\'\"fo'obar\" 'don'\\''t'",
+        "output": [
+            "foo\\ x\\x\\'fo'obar",
+            "don't"
+        ]
+    },
+    {
+        "input": "\"foo\\ x\\x\\\\\"\\'\"fo'obar\" 'don'\\''t' \\\\",
+        "output": [
+            "foo\\ x\\x\\'fo'obar",
+            "don't",
+            "\\"
+        ]
+    },
+    {
+        "input": "'foo\\ bar'",
+        "output": [
+            "foo\\ bar"
+        ]
+    },
+    {
+        "input": "'foo\\\\ bar'",
+        "output": [
+            "foo\\\\ bar"
+        ]
+    },
+    {
+        "input": "foo\\ bar",
+        "output": [
+            "foo bar"
+        ]
+    },
+    {
+        "input": "foo#bar\nbaz",
+        "output": [
+            "foo",
+            "baz"
+        ]
+    },
+    {
+        "input": ":-) ;-)",
+        "output": [
+            ":-)",
+            ";-)"
+        ]
+    },
+    {
+        "input": "\u00e1\u00e9\u00ed\u00f3\u00fa",
+        "output": [
+            "\u00e1\u00e9\u00ed\u00f3\u00fa"
+        ]
+    }
+]
