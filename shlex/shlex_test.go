@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io/ioutil"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -10,6 +11,47 @@ import (
 type TestCase struct {
 	Input  string   `json:"input"`
 	Output []string `json:"output"`
+}
+
+func LoadTestCase(t *testing.T, name string) []TestCase {
+	data, err := ioutil.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tests []TestCase
+	if err := json.Unmarshal(data, &tests); err != nil {
+		t.Fatal(err)
+	}
+	return tests
+}
+
+// WARN: this only parse a SINGLE value right now
+func pythonShlex(t testing.TB, posix bool, input string) []string {
+	data, err := json.Marshal([]string{input}) // WARN
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args := []string{"testdata/compat.py"}
+	if posix {
+		args = append(args, "--posix")
+	}
+	args = append(args, string(data))
+
+	out, err := exec.Command("python3", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("Error running command: %v\n### OUT\n%s\n###\n", err, string(out))
+	}
+
+	var m map[string][]string
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("Error: %s\n### Data\n%s\n###\n", err, string(out))
+	}
+	for _, v := range m {
+		return v
+	}
+	t.Fatal("UNREACHABLE")
+	return nil
 }
 
 func stringsEqual(a, b []string) bool {
@@ -34,6 +76,7 @@ func compareOutput(t testing.TB, input string, got, want []string) bool {
 }
 
 func testSplit(t testing.TB, posix bool, x TestCase) (passed bool) {
+	t.Helper()
 	lex := ShlexFromString(x.Input)
 	lex.Posix = posix
 	lex.Debug = testing.Verbose()
@@ -100,25 +143,18 @@ func TestSplitGoogleCompat(t *testing.T) {
 	})
 }
 
-func LoadTestCase(t *testing.T, name string) []TestCase {
-	data, err := ioutil.ReadFile(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var tests []TestCase
-	if err := json.Unmarshal(data, &tests); err != nil {
-		t.Fatal(err)
-	}
-	return tests
-}
-
 func TestPythonCompat_NoPosix(t *testing.T) {
 	var failed int
 	tests := LoadTestCase(t, "testdata/data.json")
 	for _, x := range tests {
-		// if !testSplit(t, false, x) {
-		// 	failed++
-		// }
+		// WARN WARN
+		// output := pythonShlex(t, false, x.Input)
+		// x.Output = output
+
+		if !testSplit(t, false, x) {
+			failed++
+		}
+		continue
 
 		lex := ShlexFromString(x.Input)
 
