@@ -125,7 +125,8 @@ func (s *Shlex) isWord(r rune) bool {
 }
 
 func (s *Shlex) isComment(r rune) bool {
-	return s.Commenters && token.IsComment(r)
+	// return s.Commenters && token.IsComment(r)
+	return token.IsComment(r)
 }
 
 func (s *Shlex) isPunctuation(r rune) bool {
@@ -137,7 +138,7 @@ func (s *Shlex) classify(r rune) token.Token {
 	if !s.PunctuationChars && c == token.Punctuation {
 		c = token.None
 	} else if !s.Commenters && c == token.Comment {
-		c = token.None
+		// c = token.None
 	}
 	// if c == token.Punctuation && !s.PunctuationChars {
 	// 	c = token.None

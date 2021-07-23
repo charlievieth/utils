@@ -424,5 +424,11 @@
         "output": [
             "\u00e1\u00e9\u00ed\u00f3\u00fa"
         ]
+    },
+    {
+        "input": "x # foo",
+        "output": [
+            "x"
+        ]
     }
 ]
