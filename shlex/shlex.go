@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"container/list"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,38 +12,11 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/charlievieth/utils/shlex/deque"
 	"github.com/charlievieth/utils/shlex/token"
 )
 
-// self.wordchars = ('abcdfeghijklmnopqrstuvwxyz'
-//                   'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_')
-// if self.posix:
-//     self.wordchars += ('ßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ'
-//                        'ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ')
-
 var debug = log.New(os.Stderr, "shlex: ", log.Lshortfile)
-
-type deque struct {
-	list list.List
-}
-
-func (d *deque) Len() int { return d.list.Len() }
-
-func (d *deque) append(tok rune) {
-	d.list.PushBack(tok)
-}
-
-func (d *deque) appendLeft(tok rune) {
-	d.list.PushFront(tok)
-}
-
-func (d *deque) pop() rune {
-	return d.list.Remove(d.list.Back()).(rune)
-}
-
-func (d *deque) popLeft() rune {
-	return d.list.Remove(d.list.Front()).(rune)
-}
 
 // TODO: use Options to configure Shlex
 // type Option interface {
@@ -53,8 +25,8 @@ func (d *deque) popLeft() rune {
 
 type Shlex struct {
 	r             io.RuneReader
-	pushback      deque
-	pushbackChars deque
+	pushback      deque.Deque
+	pushbackChars deque.Deque
 
 	// state token.Token // WARN: is this correct?
 	state rune
@@ -72,8 +44,8 @@ type Shlex struct {
 
 func (s *Shlex) Reset(r io.RuneReader) {
 	s.r = r
-	s.pushback = deque{}      // TODO: reset
-	s.pushbackChars = deque{} // TODO: reset
+	s.pushback = deque.Deque{}      // TODO: reset
+	s.pushbackChars = deque.Deque{} // TODO: reset
 	s.state = ' '
 	s.token.Reset()
 	s.lineno = 0
@@ -91,15 +63,21 @@ func (s *Shlex) debugf(format string, a ...interface{}) {
 // GetToken returns io.EOF when there are no more tokens
 func (s *Shlex) GetToken() (TokenLiteral, error) {
 	if s.pushback.Len() != 0 {
-		tok := string(s.pushback.popLeft())
-		s.debugf("popping token %s", tok)
+		tok := string(s.pushback.PopLeft())
+		if s.Debug {
+			s.debugf("popping token %s", tok)
+		}
 		return TokenLiteral{Token: tok, Valid: true}, nil
 	}
 	raw, err := s.ReadToken()
 	if err != io.EOF {
-		s.debugf("token=%s", raw.Token)
+		if s.Debug {
+			s.debugf("token=%s", raw.Token)
+		}
 	} else {
-		s.debugf("token=EOF")
+		if s.Debug {
+			s.debugf("token=EOF")
+		}
 	}
 	return raw, err
 }
@@ -162,13 +140,11 @@ Loop:
 	for {
 		var nextchar rune
 		if s.PunctuationChars && s.pushbackChars.Len() > 0 {
-			nextchar = s.pushbackChars.pop()
+			nextchar = s.pushbackChars.Pop()
 		} else {
 			nextchar, _, err = s.r.ReadRune()
 			if err != nil {
-				if err == io.EOF {
-					// s.debugf("EOF")
-				} else {
+				if err != io.EOF && s.Debug {
 					s.debugf("error: %v\n", err)
 				}
 				// WARN: we should not need this
@@ -196,14 +172,15 @@ Loop:
 			// case token.None:
 			// s.debugf("token.None") // WARN
 			case token.Whitespace:
-				s.debugf("shlex: I see whitespace in whitespace state") // WARN
+				if s.Debug {
+					s.debugf("shlex: I see whitespace in whitespace state") // WARN
+				}
 				if s.token.Len() > 0 || (s.Posix && quoted) {
 					break Loop // emit current token
 				} else {
 					continue Loop
 				}
 			case token.Comment:
-				s.debugf("READLINE")
 				_ = s.readline() // WARN: handle error
 				s.lineno++
 			case token.Word:
@@ -239,15 +216,15 @@ Loop:
 				}
 			}
 		case token.Quote:
-			// fmt.Println("HIT:", string(nextchar)) // WARN
 			quoted = true
 			if nextchar == 0 {
-				s.debugf("I see EOF in quotes state")
+				if s.Debug {
+					s.debugf("I see EOF in quotes state")
+				}
 				return TokenLiteral{}, errors.New("no closing quotation")
 			}
 			switch {
 			case nextchar == s.state:
-				// fmt.Printf("HIT 2: '%c'\n", nextchar) // WARN
 				if !s.Posix {
 					s.token.WriteRune(nextchar)
 					s.state = ' '
@@ -269,7 +246,9 @@ Loop:
 			}
 		case token.Escape:
 			if nextchar == 0 {
-				s.debugf("I see EOF in escaped state")
+				if s.Debug {
+					s.debugf("I see EOF in escaped state")
+				}
 				return TokenLiteral{}, errors.New("no escaped character")
 			}
 			// In posix shells, only the quote itself or the escape
@@ -284,13 +263,14 @@ Loop:
 			// case 'a', 'c':
 		default:
 			if s.state == 'a' || s.state == 'c' {
-				// fmt.Printf("HIT 3: '%c' - %q\n", nextchar, s.token.String()) // WARN
 				switch {
 				case nextchar == 0:
 					s.state = 0
 					break Loop
 				case token.IsWhitespace(nextchar):
-					s.debugf("I see whitespace in word state")
+					if s.Debug {
+						s.debugf("I see whitespace in word state")
+					}
 					s.state = ' '
 					if s.token.Len() > 0 || (s.Posix && quoted) {
 						break Loop // emit current token
@@ -298,7 +278,6 @@ Loop:
 						continue Loop
 					}
 				case s.isComment(nextchar):
-					s.debugf("READLINE")
 					s.readline() // WARN: check error
 					s.lineno++
 					if s.Posix {
@@ -314,13 +293,12 @@ Loop:
 						s.token.WriteRune(nextchar)
 					} else {
 						if token.IsWhitespace(nextchar) {
-							s.pushbackChars.append(nextchar)
+							s.pushbackChars.PushBack(nextchar)
 						}
 						s.state = ' '
 						break Loop
 					}
 				case s.Posix && token.IsQuote(nextchar):
-					// fmt.Println("XXXX")
 					s.state = nextchar
 				case s.Posix && token.IsEscape(nextchar):
 					escapedState = 'a'
@@ -330,11 +308,13 @@ Loop:
 					s.token.WriteRune(nextchar)
 				default:
 					if s.PunctuationChars {
-						s.pushbackChars.append(nextchar)
+						s.pushbackChars.PushBack(nextchar)
 					} else {
-						s.pushback.appendLeft(nextchar)
+						s.pushback.PushFront(nextchar)
 					}
-					s.debugf("I see punctuation in word state")
+					if s.Debug {
+						s.debugf("I see punctuation in word state")
+					}
 					s.state = ' '
 					if s.token.Len() > 0 || (s.Posix && quoted) {
 						break Loop // emit current token
@@ -343,11 +323,13 @@ Loop:
 					}
 				}
 			} else {
-				s.debugf("WARN: in state %c I see character: %c", s.state, nextchar)
+				if s.Debug {
+					s.debugf("WARN: in state %c I see character: %c", s.state, nextchar)
+				}
 			}
 		}
 	}
-	if err != nil {
+	if err != nil && s.Debug {
 		s.debugf("ERROR: err=%v", err)
 	}
 	var result TokenLiteral
@@ -356,7 +338,7 @@ Loop:
 		result.Valid = true
 	}
 	s.token.Reset()
-	if result.Token != "" {
+	if result.Token != "" && s.Debug {
 		s.debugf("raw token=%s", result.Token)
 	} else {
 		s.debugf("raw token=EOF")
@@ -365,6 +347,7 @@ Loop:
 	return result, err
 }
 
+// TODO: use Options or something to configure the Shlex
 func ShlexFromString(s string) *Shlex {
 	return &Shlex{
 		r:     strings.NewReader(s),
@@ -403,6 +386,7 @@ func (s *Shlex) Split() ([]string, error) {
 
 func Split(s string, posix bool) ([]string, error) {
 	sh := ShlexFromString(s)
+	// TODO: use Options or something to configure the Shlex
 	sh.WhitespaceSplit = true
 	return sh.Split()
 }
