@@ -108,8 +108,9 @@ func testSplit(t testing.TB, posix bool, x TestCase) (passed bool) {
 	return compareOutput(t, x.Input, tokens, x.Output)
 }
 
+const googleTestString = "one two \"three four\" \"five \\\"six\\\"\" seven#eight # nine # ten\n eleven 'twelve\\' thirteen=13 fourteen/14"
+
 func TestSplitGoogleCompat(t *testing.T) {
-	const googleTestString = "one two \"three four\" \"five \\\"six\\\"\" seven#eight # nine # ten\n eleven 'twelve\\' thirteen=13 fourteen/14"
 
 	t.Run("NoPosix", func(t *testing.T) {
 		want := []string{
@@ -190,11 +191,71 @@ func TestPythonCompat_Posix(t *testing.T) {
 	}
 }
 
-func BenchmarkSplit(b *testing.B) {
-	const testString = "one two \"three four\" \"five \\\"six\\\"\" seven#eight # nine # ten\n eleven 'twelve\\' thirteen=13 fourteen/14"
+func BenchmarkSplit_One(b *testing.B) {
+	const input = "go test -run 'TestPython.*'"
+	const posix = true
 	for i := 0; i < b.N; i++ {
-		Split(testString, false)
+		Split(input, posix)
 	}
+}
+
+/*
+func BenchmarkSplit_One_Reuse(b *testing.B) {
+	const input = "go test -run 'TestPython.*'"
+	const posix = true
+
+	rd := strings.NewReader(input)
+	lex := ShlexFromString(input)
+	lex.r = rd
+	lex.WhitespaceSplit = true
+	lex.Posix = posix
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rd.Reset(input)
+		lex.Split()
+	}
+}
+*/
+
+func BenchmarkSplit(b *testing.B) {
+	benches := [...]struct {
+		Name  string
+		Posix bool
+	}{
+		{"Posix", true},
+		{"NoPosix", false},
+	}
+	b.Run("Google", func(b *testing.B) {
+		for _, x := range benches {
+			b.Run(x.Name, func(b *testing.B) {
+				for i := 0; i < b.N; i++ {
+					Split(googleTestString, x.Posix)
+				}
+			})
+		}
+	})
+	b.Run("Simple", func(b *testing.B) {
+		const input = "go test -run 'TestPython.*'"
+		for _, x := range benches {
+			b.Run(x.Name, func(b *testing.B) {
+				for i := 0; i < b.N; i++ {
+					Split(input, x.Posix)
+				}
+			})
+		}
+	})
+
+	// b.Run("NoPosix", func(b *testing.B) {
+	// 	for i := 0; i < b.N; i++ {
+	// 		Split(googleTestString, false)
+	// 	}
+	// })
+	// b.Run("Posix", func(b *testing.B) {
+	// 	for i := 0; i < b.N; i++ {
+	// 		Split(googleTestString, true)
+	// 	}
+	// })
 }
 
 // WARN: debug only
