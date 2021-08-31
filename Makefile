@@ -34,6 +34,10 @@ isbinary:
 linecount:
 	@cd ./linecount && go install
 
+.PHONY: gotimeit
+gotimeit:
+	@cd ./gotimeit && go install
+
 .PHONY: subl-completion
 subl-completion:
 	@cd ./subl-completion && go install

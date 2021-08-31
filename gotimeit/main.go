@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"text/tabwriter"
 	"time"
 )
@@ -53,7 +55,26 @@ type Line struct {
 	Duration time.Duration
 }
 
+type ByDuration []Line
+
+func (b ByDuration) Len() int           { return len(b) }
+func (b ByDuration) Less(i, j int) bool { return b[i].Duration < b[j].Duration }
+func (b ByDuration) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
+
 func main() {
+	flag.Usage = func() {
+		const msg = "Usage: %[1]s [OPTION]...\n" +
+			"Append timestamps to each line of standard input.\n"
+		fmt.Fprintf(flag.CommandLine.Output(), msg, filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
+	printLines := flag.Bool("n", false, "Print line numbers")
+	sortDur := flag.Bool("s", false, "Print lines sorted by duration (implies -n)")
+	flag.Parse()
+	if *sortDur {
+		*printLines = true
+	}
+
 	lines := make([]Line, 0, 8)
 	r := NewReader(bufio.NewReader(os.Stdin))
 	var err error
@@ -76,18 +97,24 @@ func main() {
 	if len(lines) == 0 {
 		return
 	}
+
 	start := lines[0].Time
-	_ = start
 	for i := 1; i < len(lines); i++ {
 		lines[i].Duration = lines[i].Time.Sub(lines[i-1].Time)
+	}
+	if *sortDur {
+		sort.Stable(sort.Reverse(ByDuration(lines)))
 	}
 
 	const minWidth = len("0.000001")
 	var buf bytes.Buffer
 
-	for _, ll := range lines {
-		secs := float64(ll.Duration) / float64(time.Second)
-		fmt.Fprintf(&buf, "%.6f\t", secs)
+	for i, ll := range lines {
+		if *printLines {
+			fmt.Fprintf(&buf, "%d\t", i+1)
+		}
+		fmt.Fprintf(&buf, "%.6f\t", ll.Time.Sub(start).Seconds())
+		fmt.Fprintf(&buf, "%.6f\t", ll.Duration.Seconds())
 		buf.WriteByte(tabwriter.Escape)
 		buf.Write(ll.Line)
 		buf.WriteByte(tabwriter.Escape)
