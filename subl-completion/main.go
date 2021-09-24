@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +22,7 @@ func isBinary(buf []byte, name string) bool {
 	n, err := f.Read(buf)
 	f.Close()
 	if err != nil {
-		return true // ignore
+		return err != io.EOF // ignore if not EOF
 	}
 	return bytes.IndexByte(buf[:n], 0) != -1
 }
