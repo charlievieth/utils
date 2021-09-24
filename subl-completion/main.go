@@ -174,29 +174,30 @@ func CompleteFiles(prefix string) []string {
 	return matches
 }
 
+var subl = complete.Command{
+	Args: complete.PredictFunc(CompleteFiles),
+	Flags: map[string]complete.Predictor{
+		"a ":                   complete.PredictFunc(CompleteDirs),
+		"add":                  complete.PredictFunc(CompleteDirs),
+		"w ":                   predict.Nothing,
+		"wait":                 predict.Nothing,
+		"b ":                   predict.Nothing,
+		"background":           predict.Nothing,
+		"s ":                   predict.Nothing,
+		"stay":                 predict.Nothing,
+		"safe-mode":            predict.Nothing,
+		"h ":                   predict.Nothing,
+		"help":                 predict.Nothing,
+		"v ":                   predict.Nothing,
+		"version":              predict.Nothing,
+		"n ":                   predict.Nothing,
+		"new-window":           predict.Nothing,
+		"command":              predict.Nothing,
+		"launch-or-new-window": predict.Nothing,
+		"project":              complete.PredictFunc(CompleteProject),
+	},
+}
+
 func main() {
-	subl := &complete.Command{
-		Args: complete.PredictFunc(CompleteFiles),
-		Flags: map[string]complete.Predictor{
-			"a ":                   complete.PredictFunc(CompleteDirs),
-			"add":                  complete.PredictFunc(CompleteDirs),
-			"w ":                   predict.Nothing,
-			"wait":                 predict.Nothing,
-			"b ":                   predict.Nothing,
-			"background":           predict.Nothing,
-			"s ":                   predict.Nothing,
-			"stay":                 predict.Nothing,
-			"safe-mode":            predict.Nothing,
-			"h ":                   predict.Nothing,
-			"help":                 predict.Nothing,
-			"v ":                   predict.Nothing,
-			"version":              predict.Nothing,
-			"n ":                   predict.Nothing,
-			"new-window":           predict.Nothing,
-			"command":              predict.Nothing,
-			"launch-or-new-window": predict.Nothing,
-			"project":              complete.PredictFunc(CompleteProject),
-		},
-	}
 	subl.Complete("subl")
 }
