@@ -112,7 +112,7 @@ func RecordTest(ctx context.Context, events []*TestEvent) error {
 
 	var args []string
 	if HasSerialTest(events) {
-		args = []string{"test", "-parallel=1", "-run", run, "-record", pkg.ImportPath}
+		args = []string{"test", "-p=1", "-run", run, "-record", pkg.ImportPath}
 	} else {
 		args = []string{"test", "-run", run, "-record", pkg.ImportPath}
 	}
