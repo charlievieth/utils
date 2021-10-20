@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	_ "embed"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"hash"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"text/tabwriter"
 
@@ -21,6 +24,7 @@ import (
 
 type FileHash struct {
 	Name, Hash string
+	Size       int64
 }
 
 type FileList struct {
@@ -49,6 +53,10 @@ func (w *Worker) HashFile(name string) error {
 	if err != nil {
 		return err
 	}
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
 	if w.buf == nil {
 		w.buf = make([]byte, 32*1024)
 	}
@@ -64,26 +72,46 @@ func (w *Worker) HashFile(name string) error {
 	w.files.Add(FileHash{
 		Name: name,
 		Hash: hex.EncodeToString(w.h.Sum(nil)),
+		Size: fi.Size(),
 	})
 	return nil
 }
 
-const DropFileTableStmt = `CREATE TABLE IF EXISTS files;`
+const DropFileTableStmt = `DROP TABLE IF EXISTS files;`
 
-const CreateFileTableStmt = `CREATE TABLE IF NOT EXISTS files (
-    id          INTEGER PRIMARY KEY,
-    path        TEXT NOT NULL,
-    basename    TEXT NOT NULL,
-    hash        TEXT NOT NULL
-);`
+//go:embed sql/create_files_table.sql
+var CreateFileTableStmt string
 
-const InsertFileStmt = `
-INSERT INTO files (
-	path,
-	basename,
-	hash
-) VALUES (?, ?, ?);
-`
+//go:embed sql/insert_files_statement.sql
+var InsertFileStmt string
+
+func connectionString(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	v := u.Query()
+	v.Set("_foreign_keys", "1")
+	v.Set("_cache_size", "-4000")
+	u.RawQuery = v.Encode()
+	return u.String(), nil
+}
+
+func dropFilesTable(db *sql.DB) error {
+	const query = `
+	SELECT EXISTS(
+		SELECT name FROM sqlite_master WHERE type='table' AND name='files'
+	);`
+	var exists bool
+	if err := db.QueryRow(query).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		fmt.Fprintln(os.Stderr, "WARNING: dropping `files` table")
+		db.Exec(DropFileTableStmt) // no error check
+	}
+	return nil
+}
 
 func main() {
 	flag.Usage = func() {
@@ -92,7 +120,7 @@ func main() {
 		flag.PrintDefaults()
 	}
 	hashDB := flag.Bool("db", false, "write hashes to a sqlite database")
-	hashDBName := flag.String("db-name", "hashes.sqlite", "name of hash database")
+	hashDBName := flag.String("db-name", "hashes.sqlite", "name of hash database (implies -db)")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "error: missing PATH")
@@ -101,13 +129,21 @@ func main() {
 	}
 
 	var db *sql.DB
+	if *hashDBName != "" {
+		*hashDB = true
+	}
 	if *hashDB {
-		var err error
-		db, err = sql.Open("sqlite3", *hashDBName)
+		connStr, err := connectionString(*hashDBName)
 		if err != nil {
 			Fatal(err)
 		}
-		db.Exec(DropFileTableStmt) // no error check
+		db, err = sql.Open("sqlite3", connStr)
+		if err != nil {
+			Fatal(err)
+		}
+		if err := dropFilesTable(db); err != nil {
+			Fatal(err)
+		}
 		if _, err := db.Exec(CreateFileTableStmt); err != nil {
 			Fatal(err)
 		}
@@ -164,7 +200,8 @@ func main() {
 			Fatal(err)
 		}
 		for _, f := range list.Files() {
-			_, err := stmt.Exec(f.Name, filepath.Base(f.Name), f.Hash)
+			ext := strings.ToLower(filepath.Ext(f.Name))
+			_, err := stmt.Exec(f.Name, filepath.Base(f.Name), ext, f.Hash, f.Size)
 			if err != nil {
 				tx.Rollback()
 				Fatal(err)
