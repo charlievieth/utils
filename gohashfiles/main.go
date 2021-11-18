@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	_ "embed"
@@ -43,9 +44,10 @@ func (f *FileList) Files() []FileHash {
 }
 
 type Worker struct {
-	buf   []byte
-	h     hash.Hash
-	files *FileList
+	buf     []byte
+	h       hash.Hash
+	files   *FileList
+	newHash func() hash.Hash
 }
 
 func (w *Worker) HashFile(name string) error {
@@ -61,7 +63,7 @@ func (w *Worker) HashFile(name string) error {
 		w.buf = make([]byte, 32*1024)
 	}
 	if w.h == nil {
-		w.h = sha256.New()
+		w.h = w.newHash()
 	}
 	w.h.Reset()
 	_, err = io.CopyBuffer(w.h, f, w.buf)
@@ -113,18 +115,30 @@ func dropFilesTable(db *sql.DB) error {
 	return nil
 }
 
+var supportedHashFuncs = map[string]func() hash.Hash{
+	"md5":    md5.New,
+	"sha256": sha256.New,
+}
+
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s: PATHs...\n",
 			filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 	}
+	hashType := flag.String("hash", "md5", "hash function to use (md5 or sha256)")
 	hashDB := flag.Bool("db", false, "write hashes to a sqlite database")
 	hashDBName := flag.String("db-name", "hashes.sqlite", "name of hash database (implies -db)")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "error: missing PATH")
 		flag.Usage()
+		os.Exit(1)
+	}
+
+	hashFunc := supportedHashFuncs[*hashType]
+	if hashFunc == nil {
+		fmt.Fprintln(os.Stderr, "error: invalid 'hash' function: %q", *hashType)
 		os.Exit(1)
 	}
 
@@ -162,7 +176,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := &Worker{files: list}
+			w := &Worker{files: list, newHash: hashFunc}
 			for name := range workCh {
 				if err := w.HashFile(name); err != nil {
 					fmt.Fprintf(os.Stderr, "error: %s: %v\n", name, err)
@@ -176,7 +190,8 @@ func main() {
 		fmt.Println("Walking:", path)
 		err := filepath.Walk(path, func(path string, fi os.FileInfo, err error) error {
 			if err != nil {
-				return err
+				fmt.Fprintf(os.Stderr, "error: walking: %s: %v\n", path, err)
+				return nil
 			}
 			if fi.Mode().IsRegular() {
 				workCh <- path
@@ -184,7 +199,7 @@ func main() {
 			return nil
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: walking path: %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "error: walking path: %s: %v", path, err)
 		}
 	}
 	close(workCh)
