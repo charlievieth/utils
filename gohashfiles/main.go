@@ -13,11 +13,13 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"text/tabwriter"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -99,13 +101,13 @@ func connectionString(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func dropFilesTable(db *sql.DB) error {
+func dropFilesTable(ctx context.Context, db *sql.DB) error {
 	const query = `
 	SELECT EXISTS(
 		SELECT name FROM sqlite_master WHERE type='table' AND name='files'
 	);`
 	var exists bool
-	if err := db.QueryRow(query).Scan(&exists); err != nil {
+	if err := db.QueryRowContext(ctx, query).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {
@@ -120,7 +122,7 @@ var supportedHashFuncs = map[string]func() hash.Hash{
 	"sha256": sha256.New,
 }
 
-func main() {
+func realMain() error {
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s: PATHs...\n",
 			filepath.Base(os.Args[0]))
@@ -142,6 +144,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGQUIT)
+	go func() {
+		<-ctx.Done()
+		fmt.Fprintln(os.Stderr, "warn: received signal stopping...")
+		stop()
+	}()
+
 	var db *sql.DB
 	if *hashDBName != "" {
 		*hashDB = true
@@ -149,17 +158,17 @@ func main() {
 	if *hashDB {
 		connStr, err := connectionString(*hashDBName)
 		if err != nil {
-			Fatal(err)
+			return err
 		}
 		db, err = sql.Open("sqlite3", connStr)
 		if err != nil {
-			Fatal(err)
+			return err
 		}
-		if err := dropFilesTable(db); err != nil {
-			Fatal(err)
+		if err := dropFilesTable(ctx, db); err != nil {
+			return err
 		}
-		if _, err := db.Exec(CreateFileTableStmt); err != nil {
-			Fatal(err)
+		if _, err := db.ExecContext(ctx, CreateFileTableStmt); err != nil {
+			return err
 		}
 	}
 
@@ -176,7 +185,10 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := &Worker{files: list, newHash: hashFunc}
+			w := &Worker{
+				files:   list,
+				newHash: hashFunc,
+			}
 			for name := range workCh {
 				if err := w.HashFile(name); err != nil {
 					fmt.Fprintf(os.Stderr, "error: %s: %v\n", name, err)
@@ -185,16 +197,20 @@ func main() {
 		}()
 	}
 
-	// type WalkFunc func(path string, info os.FileInfo, err error) error
 	for _, path := range flag.Args() {
-		fmt.Println("Walking:", path)
+		fmt.Println("Walking:", path) // TODO: use log instead
+		done := ctx.Done()
 		err := filepath.Walk(path, func(path string, fi os.FileInfo, err error) error {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: walking: %s: %v\n", path, err)
 				return nil
 			}
 			if fi.Mode().IsRegular() {
-				workCh <- path
+				select {
+				case workCh <- path:
+				case <-done:
+					return ctx.Err()
+				}
 			}
 			return nil
 		})
@@ -206,46 +222,60 @@ func main() {
 	wg.Wait()
 
 	if db != nil {
-		tx, err := db.BeginTx(context.TODO(), nil)
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			Fatal(err)
+			return err
 		}
-		stmt, err := tx.Prepare(InsertFileStmt)
+		stmt, err := tx.PrepareContext(ctx, InsertFileStmt)
 		if err != nil {
-			Fatal(err)
+			return err
 		}
 		for _, f := range list.Files() {
 			ext := strings.ToLower(filepath.Ext(f.Name))
-			_, err := stmt.Exec(f.Name, filepath.Base(f.Name), ext, f.Hash, f.Size)
+			base := filepath.Base(f.Name)
+			var pext *string
+			if ext != "" && ext != base {
+				pext = &ext
+			}
+			_, err := stmt.ExecContext(ctx, f.Name, base, pext, f.Hash, f.Size)
 			if err != nil {
 				tx.Rollback()
-				Fatal(err)
+				return err
 			}
 		}
 		if err := tx.Commit(); err != nil {
-			Fatal(err)
+			return err
 		}
-		return
-	}
-
-	m := make(map[string][]string, len(list.Files()))
-	for _, h := range list.Files() {
-		m[h.Hash] = append(m[h.Hash], h.Name)
-	}
-	// for k, v := range m {
-	// 	sort.Strings(v)
-	// 	m[k] = v
-	// }
-
-	w := tabwriter.NewWriter(os.Stdout, 1, 8, 1, '\t', 0)
-	for k, v := range m {
-		if len(v) > 1 {
-			sort.Strings(v)
+		if err := db.Close(); err != nil {
+			return err
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\n", len(v), k, v)
+	} else {
+		// TODO: do we care about / want this?
+		m := make(map[string][]string, len(list.Files()))
+		for _, h := range list.Files() {
+			m[h.Hash] = append(m[h.Hash], h.Name)
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 1, 8, 1, '\t', 0)
+		for k, v := range m {
+			if len(v) > 1 {
+				sort.Strings(v)
+			}
+			_, err := fmt.Fprintf(w, "%d\t%s\t%s\n", len(v), k, v)
+			if err != nil {
+				return err
+			}
+		}
+		if err := w.Flush(); err != nil {
+			return err
+		}
 	}
-	if err := w.Flush(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: flush: %v\n", err)
+	return nil
+}
+
+func main() {
+	if err := realMain(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
