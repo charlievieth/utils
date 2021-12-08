@@ -151,8 +151,9 @@ func (b byIsBinary) Less(i, j int) bool {
 }
 
 type Worker struct {
-	files     []File
-	printOnly bool
+	files   []File
+	wd      string // working directory
+	verbose bool
 }
 
 func (w *Worker) Run(wg *sync.WaitGroup, names <-chan string) {
@@ -168,21 +169,19 @@ func (w *Worker) Run(wg *sync.WaitGroup, names <-chan string) {
 			fmt.Fprintf(os.Stderr, "Error: %s: %s\n", name, err)
 			continue
 		}
-		if w.printOnly {
+		if w.verbose {
 			fmt.Printf("%s\t%t\n", ext, binary)
-		} else {
-			abs, err := filepath.Abs(name)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %s: %s\n", name, err)
-				abs = name
-			}
-			w.files = append(w.files, File{
-				Path:     abs,
-				Base:     filepath.Base(name),
-				Ext:      filepath.Ext(name),
-				IsBinary: binary,
-			})
 		}
+		path := name
+		if w.wd != "" && !filepath.IsAbs(path) {
+			path = filepath.Join(w.wd, name)
+		}
+		w.files = append(w.files, File{
+			Path:     path,
+			Base:     filepath.Base(name),
+			Ext:      filepath.Ext(name),
+			IsBinary: binary,
+		})
 	}
 }
 
@@ -262,8 +261,11 @@ func FindIssues(filename string) {
 
 func main() {
 	nullTerminated := flag.Bool("0", false, "input is null terminated")
-	jsonFlag := flag.Bool("json", false, "input is null terminated")
-	dbFlag := flag.String("db", "", "creat a sqlite database of all the files")
+	jsonFlag := flag.Bool("json", false, "print JSON output")
+	verboseFlag := flag.Bool("verbose", false, "verbose output")
+	dbFlag := flag.String("db", "", "create a sqlite database of all the files")
+	absolutePaths := flag.Bool("absolute-path", false, "print the absolute path of files")
+
 	flag.Parse()
 
 	var delim byte = '\n'
@@ -277,6 +279,15 @@ func main() {
 		}
 	}
 
+	var wd string
+	if *absolutePaths {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			Fatal(err)
+		}
+	}
+
 	numCPU := runtime.NumCPU() * 2
 
 	workers := make(Workers, numCPU)
@@ -285,7 +296,8 @@ func main() {
 	wg := &sync.WaitGroup{}
 	for i := 0; i < len(workers); i++ {
 		workers[i] = &Worker{
-			printOnly: *jsonFlag == false,
+			wd:      wd,
+			verbose: *verboseFlag,
 		}
 		wg.Add(1)
 		go workers[i].Run(wg, names)
@@ -296,9 +308,8 @@ func main() {
 		r := bufio.NewReader(os.Stdin)
 		for {
 			s, e := r.ReadString(delim)
-			if len(s) > 0 {
-				s = s[:len(s)-1]
-				names <- s
+			if len(s) > 1 {
+				names <- filepath.Clean(s[:len(s)-1])
 			}
 			if e != nil {
 				if e != io.EOF {
@@ -356,7 +367,7 @@ func CreateDatabase(name string, files []File) error {
 		is_binary
 	) VALUES (?, ?, ?, ?);`
 
-	const baseIndexStmt = `CREATE INDEX ix_files_base ON files(base);`
+	// const baseIndexStmt = `CREATE INDEX ix_files_base ON files(base);`
 	const extIndexStmt = `CREATE INDEX ix_files_ext ON files(ext);`
 	const binaryIndexStmt = `CREATE INDEX ix_files_binary ON files(is_binary);`
 
@@ -382,9 +393,9 @@ func CreateDatabase(name string, files []File) error {
 		Fatal(err) // return err
 	}
 	for _, f := range files {
-		var ext interface{}
+		var ext *string
 		if f.Ext != "" {
-			ext = f.Ext
+			ext = &f.Ext
 		}
 		if _, err := stmt.Exec(f.Path, f.Base, ext, f.IsBinary); err != nil {
 			tx.Rollback()
@@ -395,13 +406,13 @@ func CreateDatabase(name string, files []File) error {
 		Fatal(err) // return err
 	}
 
-	if _, err := db.Exec(baseIndexStmt); err != nil {
-		Fatal(err) // return err
-	}
 	if _, err := db.Exec(extIndexStmt); err != nil {
 		Fatal(err) // return err
 	}
 	if _, err := db.Exec(binaryIndexStmt); err != nil {
+		Fatal(err) // return err
+	}
+	if _, err := db.Exec("VACUUM;"); err != nil {
 		Fatal(err) // return err
 	}
 	return nil

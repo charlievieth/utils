@@ -4,7 +4,7 @@ build:
 
 .PHONY: install
 install:
-	go install --tags "libsqlite3 darwin"
+	CGO_CFLAGS="-g -O3 -march=native -mtune=native" go install --tags "libsqlite3 darwin"
 
 .PHONY: test
 test:
