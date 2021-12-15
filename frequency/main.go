@@ -11,8 +11,9 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
-	"strings"
 	"text/tabwriter"
+
+	"github.com/charlievieth/num"
 )
 
 type Reader struct {
@@ -36,13 +37,15 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 		}
 		r.buf = append(r.buf, frag...)
 	}
+	if n := len(frag); n != 0 && frag[n-1] == delim {
+		frag = frag[:n-1]
+	}
 	r.buf = append(r.buf, frag...)
 	return r.buf, err
 }
 
 type Line struct {
 	S string
-	L string // lower
 	N int
 }
 
@@ -50,7 +53,7 @@ type byName []Line
 
 func (b byName) Len() int           { return len(b) }
 func (b byName) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-func (b byName) Less(i, j int) bool { return b[i].L < b[j].L }
+func (b byName) Less(i, j int) bool { return b[i].S < b[j].S }
 
 type byCount []Line
 
@@ -70,88 +73,96 @@ func (b byNameCount) Len() int      { return len(b) }
 func (b byNameCount) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
 
 func (b byNameCount) Less(i, j int) bool {
-	return b[i].N < b[j].N || (b[i].N == b[j].N && b[i].S < b[j].S)
+	l1 := &b[i]
+	l2 := &b[j]
+	return l1.N < l2.N || (l1.N == l2.N && l1.S < l2.S)
 }
 
+// TODO: remove ignore case option
 func ReadLines(r *Reader, delim byte, ignoreCase, reverseOrder bool) ([]Line, error) {
-	m := make(map[string]int, 128)
+	m := make(map[string]*int, 128)
 
 	var err error
-	for err == nil {
-		var b []byte
-		b, err = r.ReadBytes(delim)
-		if b = bytes.TrimSpace(b); len(b) != 0 {
-			m[string(b)]++
+	for {
+		// TOOD: trim space ???
+		b, e := r.ReadBytes(delim)
+		if len(b) != 0 {
+			if ignoreCase {
+				b = bytes.ToLower(b)
+			}
+			p := m[string(b)]
+			if p == nil {
+				p = new(int)
+				m[string(b)] = p
+			}
+			*p++
+		}
+		if e != nil {
+			if e != io.EOF {
+				err = e
+			}
+			break
 		}
 	}
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return nil, err
 	}
 
 	lines := make([]Line, 0, len(m))
-	if ignoreCase {
-		for s, n := range m {
-			lines = append(lines, Line{S: s, L: strings.ToLower(s), N: n})
-		}
-	} else {
-		for s, n := range m {
-			lines = append(lines, Line{S: s, N: n})
-		}
+	for s, n := range m {
+		lines = append(lines, Line{S: s, N: *n})
 	}
-	if ignoreCase {
+
+	if reverseOrder {
 		sort.Sort(byName(lines))
-		if reverseOrder {
-			sort.Stable(byCountReverse(lines))
-		} else {
-			sort.Stable(byCount(lines))
-		}
+		sort.Stable(byCountReverse(lines))
 	} else {
-		if reverseOrder {
-			sort.Sort(byName(lines))
-			sort.Stable(byCountReverse(lines))
-		} else {
-			sort.Sort(byNameCount(lines))
-		}
+		sort.Sort(byNameCount(lines))
 	}
+
 	return lines, nil
 }
 
-var (
-	NullTerminate   bool
-	CaseInsensitive bool
-	ReverseOrder    bool
-)
-
-func parseFlags() {
-	flag.BoolVar(&NullTerminate, "0", false,
-		"Expect NUL ('\\0') characters as separators, instead of newlines")
-	flag.BoolVar(&CaseInsensitive, "case", false,
-		"Sort names case-insensitively")
-	flag.BoolVar(&ReverseOrder, "r", false,
-		"Reverse frequency sort order.")
-	flag.Parse()
-}
-
 func main() {
-	parseFlags()
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [OPTION]...\n",
+			filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
+	nullTerminate := flag.Bool("0", false, "line delimiter is NUL, not newline")
+	reverseOrder := flag.Bool("r", false, "reverse frequency sort order")
+	printThousandsSep := flag.Bool("n", false, "print numbers with thousands separators")
+	caseInsensitive := flag.Bool("i", false, "sort names case-insensitively")
+	flag.Parse()
+
+	// parseFlags()
 	r := Reader{
-		b:   bufio.NewReader(os.Stdin),
+		b:   bufio.NewReaderSize(os.Stdin, 64*1024),
 		buf: make([]byte, 128),
 	}
 	delim := byte('\n')
-	if NullTerminate {
+	if *nullTerminate {
 		delim = 0
 	}
-	lines, err := ReadLines(&r, delim, CaseInsensitive, ReverseOrder)
+	lines, err := ReadLines(&r, delim, *caseInsensitive, *reverseOrder)
 	if err != nil {
 		Fatal(err)
 	}
+	r = Reader{} // clear reference
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-	b := make([]byte, 0, 128)
+	thousands := *printThousandsSep
+
+	bw := bufio.NewWriter(os.Stdout)
+	w := tabwriter.NewWriter(bw, 0, 0, 1, ' ', 0)
+	b := make([]byte, 0, 128) // format buffer
+
 	for _, l := range lines {
 		b = b[:0]
-		b = strconv.AppendInt(b, int64(l.N), 10)
+		if thousands {
+			b = append(b, num.FormatInt(int64(l.N))...)
+		} else {
+			b = strconv.AppendInt(b, int64(l.N), 10)
+		}
 		b = append(b, ':')
 		b = append(b, '\t')
 		b = append(b, l.S...)
@@ -161,6 +172,9 @@ func main() {
 		}
 	}
 	if err := w.Flush(); err != nil {
+		Fatal(err)
+	}
+	if err := bw.Flush(); err != nil {
 		Fatal(err)
 	}
 }
