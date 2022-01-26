@@ -1,15 +1,15 @@
+//go:build appengine || (!linux && !darwin && !freebsd && !openbsd && !netbsd)
 // +build appengine !linux,!darwin,!freebsd,!openbsd,!netbsd
 
 package main
 
-import "os"
+import "github.com/charlievieth/utils/fastwalk"
 
-func GetFileSize(path string) (int64, error) {
-	// CEV: bad name, but I'm too lazy to rename the other poorly
-	// named FileSize
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return 0, err
+func GetFileSize(_ string, de fastwalk.DirEntry) (int64, error) {
+	var size int64
+	fi, err := de.Info()
+	if err == nil {
+		size = fi.Size()
 	}
-	return fi.Size(), nil
+	return size, err
 }

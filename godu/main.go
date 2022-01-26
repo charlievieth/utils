@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,10 +14,16 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"text/tabwriter"
 
-	"github.com/charlievieth/utils/godu/fastwalk"
+	"github.com/charlievieth/utils/fastwalk"
 )
+
+func init() {
+	log.SetOutput(os.Stderr)
+	log.SetFlags(log.Lshortfile)
+}
 
 const SectorSize = 4096
 
@@ -103,19 +110,15 @@ type Walker struct {
 	Exclude GlobSet
 }
 
-func (w *Walker) Walk(path string, typ os.FileMode) error {
-	if typ.IsRegular() {
-		if size, err := GetFileSize(path); err == nil {
-			atomic.AddInt64((*int64)(&w.Size), size)
+func (w *Walker) Walk(path string, de fastwalk.DirEntry) error {
+	if de.Type().IsRegular() {
+		var stat syscall.Stat_t
+		err := syscall.Lstat(path, &stat)
+		if err == nil {
+			atomic.AddInt64((*int64)(&w.Size), stat.Size)
 		}
 	}
 	return nil
-}
-
-func (w *Walker) WalkSize(fd int, _, basename string) {
-	if n, _ := GetFileSizeAt(fd, basename, false); n != 0 {
-		atomic.AddInt64((*int64)(&w.Size), n)
-	}
 }
 
 func isDir(name string) bool {
@@ -137,25 +140,8 @@ func walkPath(path string) (Size, error) {
 		return Size(fi.Size()), nil
 	}
 	var w Walker
-	return w.Size, fastwalk.Walk(path, w.Walk, func(err error) {
-		fmt.Fprintf(os.Stderr, "error: %s\n", err)
-	})
-}
-
-func ErrFunc(err error) {
-	fmt.Fprintln(os.Stderr, "error:", err)
-}
-
-func walkPathSize(path string) (Size, error) {
-	if !isDir(path) {
-		fi, err := os.Lstat(path)
-		if err != nil {
-			return 0, err
-		}
-		return Size(fi.Size()), nil
-	}
-	var w Walker
-	return w.Size, fastwalk.WalkSize(path, w.WalkSize, ErrFunc)
+	err := fastwalk.Walk(nil, path, w.Walk)
+	return w.Size, err
 }
 
 func gateSize() int {
@@ -205,10 +191,10 @@ Loop:
 			}()
 			// WARN WARN WARN
 			// WARN WARN WARN
-			// size, err := walkPath(path)
-			size, err := walkPathSize(path)
+			size, err := walkPath(path)
+			// size, err := walkPathSize(path)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %s\n", err)
+				log.Println("error:", err)
 				return
 			}
 			if flags&PrintBytes == 0 {
@@ -349,12 +335,12 @@ func main() {
 	if *cpuprofile != "" {
 		f, err := os.OpenFile(*cpuprofile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "could not create CPU profile: ", err)
+			log.Println("could not create CPU profile:", err)
 			os.Exit(1)
 		}
 		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
-			fmt.Fprintln(os.Stderr, "could not start CPU profile: ", err)
+			log.Println("could not start CPU profile:", err)
 			os.Exit(1)
 		}
 		defer pprof.StopCPUProfile()
@@ -364,7 +350,7 @@ func main() {
 		var err error
 		paths, err = readdirnames(".")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s\n", err)
+			log.Println("error:", err)
 			os.Exit(2)
 		}
 	}
@@ -373,7 +359,7 @@ func main() {
 	}
 
 	if err := walk(paths, flags); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %s\n", err)
+		log.Println("error:", err)
 		os.Exit(2)
 	}
 }
