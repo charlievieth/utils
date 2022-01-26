@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 package fastwalk
 
 import (
@@ -13,12 +16,16 @@ type fileKey struct {
 	FileIndexLow       uint32
 }
 
-type seenFiles struct {
+type EntryFilter struct {
 	mu   sync.Mutex
 	seen map[fileKey]struct{}
 }
 
-func (s *seenFiles) Seen(path string) bool {
+func NewEntryFilter() *EntryFilter {
+	return &EntryFilter{seen: make(map[fileKey]struct{}, 128)}
+}
+
+func (e *EntryFilter) Entry(path string, _ DirEntry) bool {
 	namep, err := syscall.UTF16PtrFromString(fixLongPath(path))
 	if err != nil {
 		return false
@@ -43,15 +50,15 @@ func (s *seenFiles) Seen(path string) bool {
 		FileIndexLow:       d.FileIndexLow,
 	}
 
-	s.mu.Lock()
-	if s.seen == nil {
-		s.seen = make(map[fileKey]struct{})
+	e.mu.Lock()
+	if e.seen == nil {
+		e.seen = make(map[fileKey]struct{})
 	}
-	_, ok := s.seen[key]
+	_, ok := e.seen[key]
 	if !ok {
-		s.seen[key] = struct{}{}
+		e.seen[key] = struct{}{}
 	}
-	s.mu.Unlock()
+	e.mu.Unlock()
 
 	return ok
 }

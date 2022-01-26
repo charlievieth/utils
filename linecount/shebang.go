@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 )
 
@@ -21,6 +19,17 @@ func trimSpaceLeft(s []byte) []byte {
 	return s[i:]
 }
 
+func trimSpaceRight(s []byte) []byte {
+	i := len(s)
+	for ; i > 0; i-- {
+		// include newline
+		if c := s[i-1]; !isSpace(c) && c != '\n' {
+			break
+		}
+	}
+	return s[:i]
+}
+
 func indexSpace(s []byte) int {
 	for i := 0; i < len(s); i++ {
 		if isSpace(s[i]) {
@@ -30,33 +39,15 @@ func indexSpace(s []byte) int {
 	return -1
 }
 
-func lastIndexSpace(s []byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if isSpace(s[i]) {
-			return i
-		}
-	}
-	return -1
+// isProgramName returns if s is likely the name of a program and not
+// an option ('-foo') or a shell variable assignment (PATH=/opt/bin:${PATH})
+func isProgramName(s []byte) bool {
+	return len(s) > 0 && s[0] != '-' && !bytes.Contains(s, []byte("="))
 }
 
-func maybeContainsOptions(s []byte) bool {
-	for i := 0; i < len(s)-1; i++ {
-		if isSpace(s[i]) && s[i+1] == '-' {
-			return true
-		}
-	}
-	return false
-}
-
-var ErrInvalidShebang = errors.New("invalid shebang")
-
-// var optionRe = regexp.MustCompile(`((?:\s+)(-{1,2}[[:alnum:]][-_[:alnum:]]*|--|-$))`)
-var optionRe = regexp.MustCompile(`((?:\s+)(-{1,2}[[:alnum:]][^\s]*|--|-$))`)
-
-var shebang = []byte("#!")
-
-func filepathBase(path []byte) string {
+func basename(path []byte) string {
 	if runtime.GOOS == "windows" {
+		// TODO: why is this required for Windows?
 		s := filepath.Base(string(path))
 		if s == "." || s == string(filepath.Separator) {
 			s = ""
@@ -85,89 +76,80 @@ func filepathBase(path []byte) string {
 	return string(path)
 }
 
-func ParseShebangExe(line []byte) (string, error) {
-	s := bytes.TrimSpace(line)
-	if !bytes.HasPrefix(s, shebang) {
-		return "", ErrInvalidShebang
+func ParseShebang(line []byte) (string, bool) {
+	if len(line) < len("#!/a") || string(line[:2]) != "#!" {
+		return "", false
 	}
 
 	// Strip off shebang
-	s = trimSpaceLeft(s[len("#!"):])
+	s := bytes.TrimSpace(line[len("#!"):])
 	if len(s) == 0 || s[0] != '/' {
-		return "", ErrInvalidShebang
-	}
-	if i := bytes.Index(s, []byte("<%=")); i != -1 {
-		for i = i - 1; i >= 0 && isSpace(s[i]); i-- {
-		}
-		s = s[:i+1]
+		return "", false
 	}
 
 	// Remove trailing comments, if any
 	if i := bytes.IndexByte(s, '#'); i != -1 {
-		for i = i - 1; i >= 0 && isSpace(s[i]); i-- {
-		}
-		s = s[:i+1]
-	}
-
-	// Remove any flags
-	if maybeContainsOptions(s) {
-		s = optionRe.ReplaceAll(s, nil)
+		s = trimSpaceRight(s[:i])
 	}
 
 	i := indexSpace(s)
 
 	// Absolute path
 	if i == -1 {
-		if base := filepathBase(s); base != "" {
-			return base, nil
+		if base := basename(s); base != "" {
+			return base, true
 		}
-		return "", ErrInvalidShebang
+		return "", false
 	}
 
-	s = s[i+1:]
-	if i := lastIndexSpace(s); i != -1 {
-		return string(s[i+1:]), nil
+	// Special case for `/usr/bin/env CMD`
+	if bytes.HasPrefix(s, []byte("/usr/bin/env ")) {
+		args := trimSpaceLeft(s[len("/usr/bin/env "):])
+
+		// First argument does not look like an option
+		if len(args) > 0 && args[0] != '-' {
+			first := args
+			if i := indexSpace(first); i != -1 {
+				first = first[:i]
+			}
+			if base := basename(first); base != "" {
+				return base, true
+			}
+			return "", false
+		}
+
+		// Return first argument to `env` that is not an option or
+		// a shell variable assignment
+		for _, a := range bytes.Fields(args) {
+			if isProgramName(a) {
+				if base := basename(a); base != "" {
+					return base, true
+				}
+				return "", false
+			}
+		}
+
+		// Failed to parse the arguments to `env`
+		return "env", true
 	}
-	if base := filepathBase(s); base != "" {
-		return base, nil
+
+	// There are spaces in the interpreter line (`#!/bin/bash --norc`)
+	// so just return the name of the first program that will executed
+	// this breaks for things like `#!/usr/bin/which python` but that
+	// is non-standard and there are too many potential cases to handle.
+	s = s[:i]
+
+	if base := basename(s); base != "" {
+		return base, true
 	}
-	return "", ErrInvalidShebang
+	return "", false
 }
 
+// TODO: stop reading after the initial run of comments
 func ExtractShebang(s []byte) string {
-	for {
-		m := bytes.Index(s, shebang)
-		if m < 0 {
-			break
-		}
-		// extract full line
-		start := bytes.LastIndexByte(s[:m], '\n') + 1
-		end := bytes.IndexByte(s[m:], '\n')
-		if end != -1 {
-			end += m
-		} else {
-			end = len(s)
-		}
-		// remove leading space
-		for ; start < len(s); start++ {
-			c := s[start]
-			if c != ' ' && c != '\t' {
-				break
-			}
-		}
-		if start > end {
-			return "" // this should never happen
-		}
-		line := s[start:end]
-		if len(line) > 2 && line[0] == '#' && line[1] == '!' {
-			if exe, _ := ParseShebangExe(line); exe != "" {
-				if exe == "Python" {
-					exe = "python"
-				}
-				return exe
-			}
-		}
-		s = s[end:]
+	if i := bytes.IndexByte(s, '\n'); i != -1 {
+		s = s[:i]
 	}
-	return ""
+	prog, _ := ParseShebang(s)
+	return prog
 }

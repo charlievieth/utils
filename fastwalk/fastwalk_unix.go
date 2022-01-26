@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build (linux || darwin || freebsd || openbsd || netbsd) && !appengine
-// +build linux darwin freebsd openbsd netbsd
+//go:build (linux || freebsd || openbsd || netbsd) && !appengine
+// +build linux freebsd openbsd netbsd
 // +build !appengine
 
 package fastwalk
@@ -21,7 +21,7 @@ const blockSize = 8 << 10
 // value used to represent a syscall.DT_UNKNOWN Dirent.Type.
 const unknownFileMode os.FileMode = os.ModeNamedPipe | os.ModeSocket | os.ModeDevice
 
-func (w *walker) readDir(dirName string, fn func(dirName, entName string, typ os.FileMode) error) error {
+func readDir(dirName string, fn func(dirName, entName string, de DirEntry) error) error {
 	fd, err := open(dirName, 0, 0)
 	if err != nil {
 		return &os.PathError{Op: "open", Path: dirName, Err: err}
@@ -33,7 +33,6 @@ func (w *walker) readDir(dirName string, fn func(dirName, entName string, typ os
 	bufp := 0                      // starting read position in buf
 	nbuf := 0                      // end valid data in buf
 	skipFiles := false
-	hashAll := w.seen != nil
 	for {
 		if bufp >= nbuf {
 			bufp = 0
@@ -53,8 +52,9 @@ func (w *walker) readDir(dirName string, fn func(dirName, entName string, typ os
 		// Fallback for filesystems (like old XFS) that don't
 		// support Dirent.Type and have DT_UNKNOWN (0) there
 		// instead.
+		var fi os.FileInfo
 		if typ == unknownFileMode {
-			fi, err := os.Lstat(dirName + "/" + name)
+			fi, err = os.Lstat(dirName + "/" + name)
 			if err != nil {
 				// It got deleted in the meantime.
 				if os.IsNotExist(err) {
@@ -67,10 +67,8 @@ func (w *walker) readDir(dirName string, fn func(dirName, entName string, typ os
 		if skipFiles && typ.IsRegular() {
 			continue
 		}
-		if hashAll && w.seen.SeenAt(fd, name) {
-			continue
-		}
-		if err := fn(dirName, name, typ); err != nil {
+		de := newDirEntry(dirName, name, typ, fi, nil)
+		if err := fn(dirName, name, de); err != nil {
 			if err == ErrSkipFiles {
 				skipFiles = true
 				continue
