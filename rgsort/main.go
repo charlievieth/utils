@@ -78,6 +78,31 @@ func (m byNameLineCol) Less(i, j int) bool {
 	return m1.Column < m2.Column
 }
 
+func hasANSIEscapePrefix(s string) bool {
+	return strings.HasPrefix(s, "\x1b[")
+}
+
+func stripANSI(s string) string {
+	if !hasANSIEscapePrefix(s) {
+		return s
+	}
+	var w strings.Builder
+	w.Grow(len(s) * 2 / 3) // reserve 2/3 of the length of the string
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\x1b' {
+			for ; i < len(s) && s[i] != 'm'; i++ {
+			}
+		} else {
+			w.WriteByte(c)
+		}
+	}
+	if w.Len() == 0 {
+		return ""
+	}
+	return w.String()
+}
+
 var (
 	errInvalidLineCol = errors.New("invalid line col")
 	errInvalidMatch   = errors.New("invalid rg match result")
@@ -124,17 +149,23 @@ func parseLineCol(s string) (line, col int, err error) {
 	return line, col, nil
 }
 
-func ParseMatch(raw string) (*Match, error) {
+func parseMatch(raw string) (*Match, error) {
 	s := raw
+	if hasANSIEscapePrefix(s) {
+		s = stripANSI(s)
+	}
+	p := s
+	o := 0
 	for len(s) > 0 {
 		i := strings.Index(s, ":")
 		if i == -1 {
 			return nil, errInvalidMatch
 		}
+		o += i
 		line, col, err := parseLineCol(s[i:])
 		if err == nil {
 			m := &Match{
-				Filename: s[:i],
+				Filename: p[:o],
 				Line:     line,
 				Column:   col,
 				Raw:      raw,
@@ -142,6 +173,7 @@ func ParseMatch(raw string) (*Match, error) {
 			return m, nil
 		}
 		s = s[i+1:]
+		o++
 	}
 	return nil, errInvalidMatch
 }
@@ -201,7 +233,7 @@ func main() {
 				lineCount++
 				// TODO: include the Raw portion of invalid matches
 				raw := string(b)
-				m, merr := ParseMatch(raw)
+				m, merr := parseMatch(raw)
 				if merr == nil {
 					matches = append(matches, m)
 					continue
