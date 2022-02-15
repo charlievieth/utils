@@ -78,6 +78,30 @@ func (m byNameLineCol) Less(i, j int) bool {
 	return m1.Column < m2.Column
 }
 
+type byNameLineColRev []*Match
+
+func (m byNameLineColRev) Len() int      { return len(m) }
+func (m byNameLineColRev) Swap(i, j int) { m[i], m[j] = m[j], m[i] }
+
+func (m byNameLineColRev) Less(i, j int) bool {
+	m1 := m[i]
+	m2 := m[j]
+	// TODO: support invalid matches by comparing Raw
+	if m1.Filename < m2.Filename {
+		return true
+	}
+	if m1.Filename > m2.Filename {
+		return false
+	}
+	if m1.Line > m2.Line {
+		return true
+	}
+	if m1.Line < m2.Line {
+		return false
+	}
+	return m1.Column >= m2.Column
+}
+
 func hasANSIEscapePrefix(s string) bool {
 	return strings.HasPrefix(s, "\x1b[")
 }
@@ -214,6 +238,8 @@ func main() {
 	}
 	caseSensitive := root.Flags().BoolP("case-sensitive", "s", false,
 		"Sort result file names case sensitively.")
+	reverseSort := root.Flags().BoolP("reverse", "r", false,
+		"Reverse sort order of lines (for FZF Rg).")
 	ignoreErrorsP := root.Flags().Bool("ignore-errors", false,
 		"Ignore parse errors and don't abort early if there are too many.")
 
@@ -260,7 +286,11 @@ func main() {
 				m.Filename = strings.ToLower(m.Filename)
 			}
 		}
-		sort.Sort(byNameLineCol(matches))
+		if *reverseSort {
+			sort.Sort(byNameLineColRev(matches))
+		} else {
+			sort.Sort(byNameLineCol(matches))
+		}
 
 		w := bufio.NewWriterSize(os.Stdout, 32*1024)
 		for _, m := range matches {

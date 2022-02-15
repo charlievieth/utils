@@ -1,0 +1,7 @@
+#!/bin/sh
+if command -v rgsort >/dev/null; then
+    rg "$@" | rgsort --reverse
+    exit $?
+fi
+echo >&2 'WARN: rgsort not installed!'
+exec rg "$@"
