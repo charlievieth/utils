@@ -72,7 +72,11 @@ godirname:
 .PHONY: pathutils
 pathutils: extname gobasename godirname
 
+.PHONY: rgsort
+rgsort:
+	@cd ./rgsort && go install
+
 # Install frequently used utilities
-.PHONY: all
 all: escape-regex format-json frequency ghopen godu gouniq gowd \
-	isbinary linecount subl-completion timestamp pathutils watchman-completion
+	isbinary linecount subl-completion timestamp pathutils \
+	watchman-completion rgsort
