@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	urlpkg "net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -93,21 +95,24 @@ func TrimPathPrefix(path, prefix string) string {
 }
 
 func ConvertRemote(url string) (string, error) {
-	if strings.HasSuffix(url, ".git") {
-		url = strings.TrimSuffix(url, ".git")
+	orig := url // for errors
+	if strings.HasPrefix(url, "git@") {
+		host, path, ok := strings.Cut(strings.TrimPrefix(url, "git@"), ":")
+		if !ok {
+			return "", fmt.Errorf("invalid SSH like URL: %q", orig)
+		}
+		url = fmt.Sprintf("https://%s/%s", host, path)
 	}
-	if strings.HasPrefix(url, "https://github.com/") {
-		return url, nil
+	u, err := urlpkg.Parse(url)
+	if err != nil {
+		return "", err
 	}
-	if strings.HasPrefix(url, "git@github.com:") {
-		s := strings.TrimPrefix(url, "git@github.com:")
-		return "https://github.com/" + s, nil
+	if u.Host == "go.googlesource.com" {
+		u.Host = "github.com"
+		u.Path = path.Join("golang", u.Path)
 	}
-	if strings.HasPrefix(url, "https://go.googlesource.com/") {
-		s := strings.TrimPrefix(url, "https://go.googlesource.com/")
-		return "https://github.com/golang/" + s, nil
-	}
-	return "", fmt.Errorf("unknown URL: %s", url)
+	u.Path = strings.TrimSuffix(u.Path, ".git")
+	return u.String(), nil
 }
 
 func isDir(name string) bool {
@@ -139,6 +144,11 @@ func realMain() error {
 			Path: path,
 			Info: fi,
 		}
+	}
+
+	openExe, err := exec.LookPath("open")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: \"open\" command not found")
 	}
 
 	for _, file := range files {
@@ -190,9 +200,13 @@ func realMain() error {
 				url = fmt.Sprintf("%s/blob/%s/%s", url, sha, repoPath)
 			}
 		}
-		out, err := exec.Command("open", url).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("open: %s", strings.TrimSpace(string(out)))
+
+		fmt.Println(url)
+		if openExe != "" {
+			out, err := exec.Command(openExe, url).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("open: %s", strings.TrimSpace(string(out)))
+			}
 		}
 	}
 
