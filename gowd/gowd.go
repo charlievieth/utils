@@ -10,6 +10,17 @@ import (
 	"strings"
 )
 
+func tryGoBuild(wd string) (string, error) {
+	pkg, err := build.ImportDir(wd, 0)
+	if err != nil {
+		return "", err
+	}
+	if pkg.ImportPath != "." {
+		return pkg.ImportPath, nil
+	}
+	return "", fmt.Errorf("invalid import path: %q", pkg.ImportPath)
+}
+
 func tryGoList(wd string) (string, error) {
 	data, err := exec.Command("go", "list", "-f", "{{.ImportPath}}", wd).CombinedOutput()
 	out := strings.TrimSpace(string(data))
@@ -30,14 +41,15 @@ func isSubdir(root, child string) (string, bool) {
 	return "", false
 }
 
-func tryGOPATH(wd string) (string, bool) {
+func tryGOPATH(wd string) (string, error) {
 	wd = filepath.Clean(wd)
-	for _, dir := range build.Default.SrcDirs() {
+	srcDirs := build.Default.SrcDirs()
+	for _, dir := range srcDirs {
 		if sub, ok := isSubdir(dir, wd); ok {
-			return sub, true
+			return sub, nil
 		}
 	}
-	return "", false
+	return "", fmt.Errorf("directory %q is not contianed in Go source directories: %q", wd, srcDirs)
 }
 
 func realMain() (string, error) {
@@ -45,21 +57,22 @@ func realMain() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	pkg, err := build.ImportDir(wd, 0)
-	if err != nil {
-		return "", err
+	fns := []func(string) (string, error){
+		tryGoBuild,
+		tryGoList,
+		tryGOPATH,
 	}
-	if pkg.ImportPath != "." {
-		return pkg.ImportPath, nil
+	var first error
+	for _, fn := range fns {
+		path, err := fn(wd)
+		if err == nil {
+			return path, nil
+		}
+		if first == nil {
+			first = err
+		}
 	}
-	importPath, err := tryGoList(wd)
-	if err == nil {
-		return importPath, nil
-	}
-	if s, ok := tryGOPATH(wd); ok {
-		return s, nil
-	}
-	return "", err
+	return "", first
 }
 
 func main() {
