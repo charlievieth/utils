@@ -6,6 +6,7 @@ import (
 	"go/build"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -16,6 +17,27 @@ func tryGoList(wd string) (string, error) {
 		return "", fmt.Errorf("%w: %s", err, out)
 	}
 	return out, nil
+}
+
+func isSubdir(root, child string) (string, bool) {
+	const sep = string(os.PathSeparator)
+	if !strings.HasSuffix(root, sep) {
+		root += sep
+	}
+	if strings.HasPrefix(child, root) {
+		return filepath.ToSlash(strings.TrimPrefix(child, root)), true
+	}
+	return "", false
+}
+
+func tryGOPATH(wd string) (string, bool) {
+	wd = filepath.Clean(wd)
+	for _, dir := range build.Default.SrcDirs() {
+		if sub, ok := isSubdir(dir, wd); ok {
+			return sub, true
+		}
+	}
+	return "", false
 }
 
 func realMain() (string, error) {
@@ -30,7 +52,14 @@ func realMain() (string, error) {
 	if pkg.ImportPath != "." {
 		return pkg.ImportPath, nil
 	}
-	return tryGoList(wd)
+	importPath, err := tryGoList(wd)
+	if err == nil {
+		return importPath, nil
+	}
+	if s, ok := tryGOPATH(wd); ok {
+		return s, nil
+	}
+	return "", err
 }
 
 func main() {
