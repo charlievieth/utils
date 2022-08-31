@@ -363,12 +363,8 @@ func realMain() error {
 			Follow: follow,
 		}
 
-		for _, name := range args {
-			path, err := filepath.Abs(name)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "%s: cannot create absolute path: %v\n", path, err)
-				continue
-			}
+		// TODO: follow symlinks provided on the command line?
+		for _, path := range args {
 			if !isDir(path) {
 				fmt.Fprintf(os.Stderr, "%s: skipping not a directory\n", path)
 				continue
