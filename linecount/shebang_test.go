@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"io/ioutil"
+	"testing"
+)
 
 type shebangTest struct {
 	In, Exp string
@@ -78,6 +82,14 @@ var shebangTests = []shebangTest{
 
 	// Errors
 	{
+		In:     "#!",
+		Failed: true,
+	},
+	{
+		In:     "#!     ",
+		Failed: true,
+	},
+	{
 		In:     "#!////",
 		Failed: true,
 	},
@@ -93,7 +105,7 @@ var shebangTests = []shebangTest{
 
 func TestParseShebang(t *testing.T) {
 	for i, x := range shebangTests {
-		got, ok := ParseShebang([]byte(x.In))
+		got, ok := parseShebang([]byte(x.In))
 		if got != x.Exp || ok != !x.Failed {
 			t.Errorf("%d: ParseShebang(%q) = %q, %t want: %q, %t", i, x.In, got, ok, x.Exp, !x.Failed)
 		}
@@ -103,11 +115,44 @@ func TestParseShebang(t *testing.T) {
 func TestExtractShebang(t *testing.T) {
 	for _, x := range shebangTests {
 		for _, in := range []string{x.In, x.In + "\n\necho foo!\n"} {
-			got := ExtractShebang([]byte(in))
+			got := extractShebang([]byte(in))
 			if got != x.Exp {
 				t.Errorf("ExtractShebang(%q) = %q want: %q", in, got, x.Exp)
 			}
 		}
+	}
+}
+
+func TestLineCount_ExtractShebang(t *testing.T) {
+	writeTest := func(t *testing.T, x shebangTest) string {
+		f, err := ioutil.TempFile(t.TempDir(), "*.test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := f.Name()
+		defer f.Close()
+
+		if _, err := fmt.Fprintf(f, "%s\n\necho foo!\n", x.In); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return name
+	}
+
+	for _, x := range shebangTests {
+		name := writeTest(t, x)
+		check := func(_ int64, ext string, err error) {
+			t.Helper()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ext != x.Exp {
+				t.Errorf("%+v ext: got: %q want: %q", x, ext, x.Exp)
+			}
+		}
+		check(lineCount(name, true))
 	}
 }
 
@@ -169,21 +214,21 @@ func BenchmarkParseShebang(b *testing.B) {
 	b.Run("Short", func(b *testing.B) {
 		line := []byte("#!/bin/sh")
 		for i := 0; i < b.N; i++ {
-			ParseShebang(line)
+			parseShebang(line)
 		}
 	})
 
 	b.Run("Env", func(b *testing.B) {
 		line := []byte("#!/usr/bin/env bash")
 		for i := 0; i < b.N; i++ {
-			ParseShebang(line)
+			parseShebang(line)
 		}
 	})
 
 	b.Run("RubyWithOpts", func(b *testing.B) {
 		line := []byte("#!/usr/bin/env ruby --enable-frozen-string-literal --disable=gems,did_you_mean,rubyopt")
 		for i := 0; i < b.N; i++ {
-			ParseShebang(line)
+			parseShebang(line)
 		}
 	})
 }

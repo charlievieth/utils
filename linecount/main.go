@@ -6,17 +6,20 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
 
+	"github.com/charlievieth/fastwalk"
 	"github.com/charlievieth/num"
-	"github.com/charlievieth/pkgs/fastwalk"
+	"github.com/spf13/cobra"
 )
 
 // var xKnownFileNames = map[string]string{
@@ -73,7 +76,7 @@ import (
 // 	"WORKSPACE":       "WORKSPACE",
 // }
 
-func WellKnownFilename(s string) bool {
+func wellKnownFilename(s string) bool {
 	switch s {
 	case "Dockerfile", "Gemfile", "Makefile", "Podfile", "Rakefile",
 		"CMakeLists.txt", "LICENSE", "MANIFEST", "METADATA", "NOTICE",
@@ -84,7 +87,7 @@ func WellKnownFilename(s string) bool {
 	return false
 }
 
-func IgnoredExtension(ext string) bool {
+func ignoredExtension(ext string) bool {
 	switch ext {
 	case ".bz", ".bzip", ".exe", ".gz", ".gzip", ".tar", ".tbz", ".tgz",
 		".vdi", ".xz", ".zip", ".zst":
@@ -93,12 +96,12 @@ func IgnoredExtension(ext string) bool {
 	return false
 }
 
-func Ext(path string) string {
+func normalizeExt(path string) string {
 	ext := filepath.Ext(path)
 	switch ext {
 	case "":
 		base := filepath.Base(path)
-		if WellKnownFilename(base) {
+		if wellKnownFilename(base) {
 			ext = base
 		}
 	case ".txt":
@@ -109,13 +112,15 @@ func Ext(path string) string {
 	return ext
 }
 
-func ExecutableMode(m os.FileMode) bool {
+func executableMode(m os.FileMode) bool {
 	const mask = 1 | 8 | 64
 	return m&mask != 0
 }
 
-// Tested with 16 and 32k and 8k seems best
-const bufSize = 8 * 1024
+// Tested with multiple sizes of 8k and 96k seems best.
+// Smaller sizes tended to under perform compared to mmap,
+// which was slower for almost all sizes when 96k was used.
+const bufSize = 96 * 1024
 
 var bufPool = sync.Pool{
 	New: func() interface{} {
@@ -124,74 +129,74 @@ var bufPool = sync.Pool{
 	},
 }
 
+const maxBinaryReadSize = 256
+
+var ErrBinary = errors.New("binary file")
+
 func isBinary(b []byte) bool {
-	if len(b) > 512 {
-		b = b[:512]
+	if len(b) >= maxBinaryReadSize {
+		b = b[:maxBinaryReadSize]
 	}
 	return bytes.IndexByte(b, 0) != -1
 }
 
-var ErrBinary = errors.New("binary file")
-
 var newLine = []byte{'\n'}
 
-func LineCount(filename string, needExt bool) (int64, string, error) {
-
-	f, err := os.Open(filename)
-	if err != nil {
-		return 0, "", err
-	}
+func lineCountFile(f *os.File, needExt bool) (lines int64, ext string, err error) {
 	p := bufPool.Get().(*[]byte)
-	defer func() {
-		f.Close()
-		bufPool.Put(p)
-	}()
+	defer bufPool.Put(p)
 	buf := *p
 
-	var ext string // TODO: "exe" or "ext" ???
-	var lines int64
-
-	first := true
+	nr, err := f.Read(buf)
+	if isBinary(buf[0:nr]) {
+		return 0, "", ErrBinary
+	}
+	if needExt {
+		ext = extractShebang(buf[0:nr])
+	}
 	for {
-		nr, er := f.Read(buf)
-		if first {
-			if isBinary(buf[0:nr]) {
-				return 0, "", ErrBinary
-			}
-			first = false
-		}
 		lines += int64(bytes.Count(buf[0:nr], newLine))
-		if needExt && ext == "" {
-			ext = ExtractShebang(buf[0:nr])
-		}
-		if er != nil {
-			if er != io.EOF {
-				err = er
-			}
+		if err != nil {
 			break
 		}
+		nr, err = f.Read(buf)
+	}
+	if err != nil && err == io.EOF {
+		err = nil
 	}
 	return lines, ext, err
 }
 
-type Walker struct {
-	mu       sync.Mutex
-	exts     map[string]int64
-	ignore   map[string]bool
-	seen     SeenFiles
-	symlinks bool
+func lineCount(filename string, needExt bool) (int64, string, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return 0, "", err
+	}
+	defer f.Close()
+	return lineCountFile(f, needExt)
 }
 
-func (w *Walker) Walk(path string, typ os.FileMode) error {
+type walker struct {
+	mu     sync.Mutex
+	exts   map[string]int64
+	ignore map[string]bool
+}
+
+func (w *walker) Walk(path string, de fs.DirEntry, err error) error {
+	if err != nil {
+		return err
+	}
+	typ := de.Type()
 	if typ.IsRegular() {
-		if ExecutableMode(typ) {
+		// WARN: this may ignore shell scripts!
+		if executableMode(typ) {
 			return nil
 		}
-		ext := Ext(path)
-		if IgnoredExtension(ext) {
+		ext := normalizeExt(path)
+		if ignoredExtension(ext) {
 			return nil
 		}
-		lines, scriptExt, err := LineCount(path, ext == "")
+		lines, scriptExt, err := lineCount(path, ext == "")
 		if err != nil {
 			if err != ErrBinary {
 				return err
@@ -222,191 +227,33 @@ func (w *Walker) Walk(path string, typ os.FileMode) error {
 	return nil
 }
 
-func (w *Walker) WalkLinks(path string, typ os.FileMode) error {
-	if typ&os.ModeSymlink != 0 {
-		fi, err := os.Stat(path)
-		if err != nil {
-			// handle
-			return nil
-		}
-		typ = fi.Mode()
-	}
-	seen := w.seen.Path(path)
-	if typ.IsRegular() {
-		if seen {
-			return nil
-		}
-		ext := Ext(path)
-		if IgnoredExtension(ext) {
-			return nil
-		}
-		lines, scriptExt, err := LineCount(path, ext == "")
-		if err != nil {
-			return err
-		}
-		if ext == "" && scriptExt != "" {
-			ext = scriptExt
-		}
-		w.mu.Lock()
-		w.exts[ext] += lines
-		w.mu.Unlock()
-		return nil
-	}
-	if typ&os.ModeDir != 0 {
-		if seen {
-			return filepath.SkipDir
-		}
-		base := filepath.Base(path)
-		if base == "" || base[0] == '.' || base[0] == '_' ||
-			base == "testdata" || base == "node_modules" {
-			return filepath.SkipDir
-		}
-		return nil
-	}
-
-	return nil
-}
-
 // CEV: awful name - fixme
-type Count struct {
-	S, L string
-	N    int64
+type extLineCount struct {
+	Lines int64
+	Ext   string
+	Lower string
 }
 
-type byName []Count
-
-func (b byName) Len() int           { return len(b) }
-func (b byName) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-func (b byName) Less(i, j int) bool { return b[i].L < b[j].L }
-
-type byCount []Count
-
-func (b byCount) Len() int           { return len(b) }
-func (b byCount) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-func (b byCount) Less(i, j int) bool { return b[i].N < b[j].N }
-
-type byNameCount []Count
+type byNameCount []extLineCount
 
 func (b byNameCount) Len() int      { return len(b) }
 func (b byNameCount) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
 
 func (b byNameCount) Less(i, j int) bool {
-	return b[i].N < b[j].N || (b[i].N == b[j].N && b[i].S < b[j].S)
+	b1 := b[i]
+	b2 := b[j]
+	return b1.Lines < b2.Lines || (b1.Lines == b2.Lines && b1.Ext < b2.Ext)
 }
 
-type StringSliceValue []string
+type byNameCountIgnoreCase []extLineCount
 
-var _ flag.Getter = (*StringSliceValue)(nil)
+func (b byNameCountIgnoreCase) Len() int      { return len(b) }
+func (b byNameCountIgnoreCase) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
 
-func (v StringSliceValue) Get() interface{} {
-	return ([]string)(v)
-}
-
-func (v *StringSliceValue) Set(s string) error {
-	*v = append(*v, s)
-	return nil
-}
-
-func (v StringSliceValue) String() string {
-	return fmt.Sprintf("%q", ([]string)(v))
-}
-
-const ProgramName = "linecount"
-
-var FollowSymlinks bool
-
-func parseFlags() *flag.FlagSet {
-	set := flag.NewFlagSet(ProgramName, flag.ExitOnError)
-
-	set.BoolVar(&FollowSymlinks, "L", false, "Follow symlinks")
-
-	set.Usage = func() {
-		fmt.Fprintf(set.Output(), "%s: [OPTIONS] [PATH...]\n", set.Name())
-		flag.PrintDefaults()
-	}
-	// error handled by flag.ExitOnError
-	set.Parse(os.Args[1:])
-	return set
-}
-
-func main() {
-	var UseThousandsSeparators bool
-	var IgnoredNames StringSliceValue
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "%s: [OPTIONS] [PATH...]\n",
-			filepath.Base(os.Args[0]))
-		flag.PrintDefaults()
-	}
-	flag.BoolVar(&UseThousandsSeparators, "n", false,
-		"Print numbers with thousands separators.")
-	flag.Var(&IgnoredNames, "x", "Ignore directories.")
-	flag.Parse()
-
-	pwd, err := os.Getwd()
-	if err != nil {
-		Fatal(err)
-	}
-	args := flag.Args()
-	if len(args) == 0 {
-		args = append(args, pwd)
-	}
-
-	w := Walker{
-		exts: make(map[string]int64),
-	}
-	if len(IgnoredNames) != 0 {
-		w.ignore = make(map[string]bool, len(IgnoredNames))
-		for _, s := range IgnoredNames {
-			w.ignore[s] = true
-		}
-	}
-
-	for _, path := range args {
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(pwd, path)
-		}
-		if !isDir(path) {
-			fmt.Fprintf(os.Stderr, "%s: skipping not a directory\n", path)
-			continue
-		}
-		if err := fastwalk.Walk(path, w.Walk); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: error: %s\n", path, err)
-		}
-	}
-
-	var total int64
-	exts := make([]Count, 0, len(w.exts))
-	for s, n := range w.exts {
-		if s == "" {
-			s = "<none>"
-		}
-		exts = append(exts, Count{S: s, N: n})
-		total += n
-	}
-
-	sort.Sort(byNameCount(exts))
-
-	wr := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-	b := make([]byte, 0, 128)
-	for _, l := range exts {
-		b = b[:0]
-		if UseThousandsSeparators {
-			b = append(b, num.FormatInt(l.N)...)
-		} else {
-			b = strconv.AppendInt(b, l.N, 10)
-		}
-		b = append(b, ':')
-		b = append(b, '\t')
-		b = append(b, l.S...)
-		b = append(b, '\n')
-		if _, err := wr.Write(b); err != nil {
-			Fatal(err)
-		}
-	}
-	// TODO: print total
-	if err := wr.Flush(); err != nil {
-		Fatal(err)
-	}
+func (b byNameCountIgnoreCase) Less(i, j int) bool {
+	b1 := b[i]
+	b2 := b[j]
+	return b1.Lines < b2.Lines || (b1.Lines == b2.Lines && b1.Lower < b2.Lower)
 }
 
 func isDir(name string) bool {
@@ -414,40 +261,176 @@ func isDir(name string) bool {
 	return err == nil && fi.IsDir()
 }
 
-func Fatal(err interface{}) {
-	if err == nil {
-		return
+func realMain() error {
+	root := cobra.Command{
+		Use: "fastwalk: [OPTIONS] [PATH...]",
 	}
-	errMsg := "Error"
-	if _, file, line, _ := runtime.Caller(1); file != "" {
-		errMsg = fmt.Sprintf("Error (%s:#%d)", filepath.Base(file), line)
+	flags := root.Flags()
+
+	// TODO: support `rg` style globs
+	//
+	// flags.StringArrayP("glob", "g", nil, "Ignore directories matching GLOB.")
+
+	flags.StringArrayP("exclude", "x", nil,
+		"Ignore directories matching GLOB.")
+	flags.BoolP("pretty-numbers", "n", false,
+		"Print numbers with thousands separators.")
+	flags.BoolP("ignore-case", "s", false,
+		"Ignore case when sorting file extensions.")
+
+	// TODO: add an option to ignore duplicate files (expensive)
+	flags.BoolP("follow", "L", false,
+		"Follow symbolic links while traversing directories.")
+
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to `file`")
+	memprofile := flag.String("memprofile", "", "write memory profile to `file`")
+
+	var defuncs []func()
+	defer func() {
+		for i := len(defuncs) - 1; i >= 0; i-- {
+			defuncs[i]()
+		}
+	}()
+	atexit := func(fn func()) { defuncs = append(defuncs, fn) }
+
+	root.PersistentPreRunE = func(_ *cobra.Command, _ []string) error {
+		if *cpuprofile != "" {
+			f, err := os.Create(*cpuprofile)
+			if err != nil {
+				return fmt.Errorf("could not create CPU profile: %w", err)
+			}
+			if err := pprof.StartCPUProfile(f); err != nil {
+				_ = f.Close()
+				return fmt.Errorf("could not start CPU profile: %w", err)
+			}
+			atexit(func() {
+				pprof.StopCPUProfile()
+				_ = f.Close()
+			})
+		}
+		if *memprofile != "" {
+			f, err := os.Create(*memprofile)
+			if err != nil {
+				return fmt.Errorf("could not create memory profile: %w", err)
+			}
+			atexit(func() {
+				runtime.GC() // get up-to-date statistics
+				err := pprof.WriteHeapProfile(f)
+				_ = f.Close()
+				if err != nil {
+					panic(fmt.Sprint("could not write memory profile:", err))
+				}
+			})
+		}
+		return nil
 	}
-	switch e := err.(type) {
-	case string, error, fmt.Stringer:
-		fmt.Fprintf(os.Stderr, "%s: %s\n", errMsg, e)
-	default:
-		fmt.Fprintf(os.Stderr, "%s: %#v\n", errMsg, e)
+
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		exclude, err := cmd.Flags().GetStringArray("exclude")
+		if err != nil {
+			return err
+		}
+		follow, err := cmd.Flags().GetBool("follow")
+		if err != nil {
+			return err
+		}
+		prettyNumbers, err := cmd.Flags().GetBool("pretty-numbers")
+		if err != nil {
+			return err
+		}
+		ignoreCase, err := cmd.Flags().GetBool("ignore-case")
+		if err != nil {
+			return err
+		}
+
+		if len(args) == 0 {
+			pwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			args = []string{pwd}
+		}
+
+		w := &walker{
+			exts: make(map[string]int64),
+		}
+		if len(exclude) != 0 {
+			w.ignore = make(map[string]bool, len(exclude))
+			for _, s := range exclude {
+				w.ignore[s] = true
+			}
+		}
+		conf := fastwalk.Config{
+			Follow: follow,
+		}
+
+		for _, name := range args {
+			path, err := filepath.Abs(name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s: cannot create absolute path: %v\n", path, err)
+				continue
+			}
+			if !isDir(path) {
+				fmt.Fprintf(os.Stderr, "%s: skipping not a directory\n", path)
+				continue
+			}
+			if err := fastwalk.Walk(&conf, path, w.Walk); err != nil {
+				fmt.Fprintf(os.Stderr, "%s: error: %s\n", path, err)
+			}
+		}
+
+		var total int64
+		exts := make([]extLineCount, 0, len(w.exts))
+		for s, n := range w.exts {
+			if s == "" {
+				s = "<none>"
+			}
+			exts = append(exts, extLineCount{
+				Lines: n,
+				Ext:   s,
+			})
+			total += n
+		}
+
+		if ignoreCase {
+			for i, e := range exts {
+				exts[i].Lower = strings.ToLower(e.Ext)
+			}
+			sort.Sort(byNameCountIgnoreCase(exts))
+		} else {
+			sort.Sort(byNameCount(exts))
+		}
+
+		wr := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+		b := make([]byte, 0, 128)
+		for _, l := range exts {
+			b = b[:0]
+			if prettyNumbers {
+				b = append(b, num.FormatInt(l.Lines)...)
+			} else {
+				b = strconv.AppendInt(b, l.Lines, 10)
+			}
+			b = append(b, ':')
+			b = append(b, '\t')
+			b = append(b, l.Ext...)
+			b = append(b, '\n')
+			if _, err := wr.Write(b); err != nil {
+				return err
+			}
+		}
+		// TODO: print total
+		if err := wr.Flush(); err != nil {
+			return err
+		}
+
+		return nil
 	}
-	os.Exit(1)
+
+	return root.Execute()
 }
 
-/*
-func LineCount(r io.Reader, buf []byte) (lines int64, err error) {
-	if buf == nil {
-		buf = make([]byte, 32*1024)
+func main() {
+	if err := realMain(); err != nil {
+		os.Exit(1)
 	}
-	for {
-		nr, er := r.Read(buf)
-		if nr > 0 {
-			lines += int64(bytes.Count(buf[0:nr], []byte{'\n'}))
-		}
-		if er != nil {
-			if er != io.EOF {
-				err = er
-			}
-			break
-		}
-	}
-	return
 }
-*/

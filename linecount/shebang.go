@@ -76,7 +76,7 @@ func basename(path []byte) string {
 	return string(path)
 }
 
-func ParseShebang(line []byte) (string, bool) {
+func parseShebang(line []byte) (string, bool) {
 	if len(line) < len("#!/a") || string(line[:2]) != "#!" {
 		return "", false
 	}
@@ -146,10 +146,10 @@ func ParseShebang(line []byte) (string, bool) {
 }
 
 // TODO: stop reading after the initial run of comments
-func ExtractShebang(s []byte) string {
+func extractShebang(s []byte) string {
 	if i := bytes.IndexByte(s, '\n'); i != -1 {
 		s = s[:i]
 	}
-	prog, _ := ParseShebang(s)
+	prog, _ := parseShebang(s)
 	return prog
 }
