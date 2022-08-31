@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -282,8 +281,8 @@ func realMain() error {
 	flags.BoolP("follow", "L", false,
 		"Follow symbolic links while traversing directories.")
 
-	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to `file`")
-	memprofile := flag.String("memprofile", "", "write memory profile to `file`")
+	cpuprofile := flags.String("cpuprofile", "", "write cpu profile to `file`")
+	memprofile := flags.String("memprofile", "", "write memory profile to `file`")
 
 	var defuncs []func()
 	defer func() {
@@ -422,7 +421,6 @@ func realMain() error {
 		if err := wr.Flush(); err != nil {
 			return err
 		}
-
 		return nil
 	}
 
