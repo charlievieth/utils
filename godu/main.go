@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,16 +15,153 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"text/tabwriter"
 
-	"github.com/charlievieth/utils/fastwalk"
+	"github.com/charlievieth/fastwalk"
 )
 
 func init() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Lshortfile)
 }
+
+// // typedef enum { NONE, KILO, MEGA, GIGA, TERA, PETA, UNIT_MAX } unit_t;
+// // int unitp [] = { NONE, KILO, MEGA, GIGA, TERA, PETA };
+
+// const (
+// 	KILO_2_SZ = 1024
+// 	MEGA_2_SZ = 1024 * 1024
+// 	GIGA_2_SZ = 1024 * 1024 * 1024
+// 	TERA_2_SZ = 1024 * 1024 * 1024 * 1024
+// 	PETA_2_SZ = 1024 * 1024 * 1024 * 1024 * 1024
+
+// 	KILO_SI_SZ = 1000
+// 	MEGA_SI_SZ = 1000 * 1000
+// 	GIGA_SI_SZ = 1000 * 1000 * 1000
+// 	TERA_SI_SZ = 1000 * 1000 * 1000 * 1000
+// 	PETA_SI_SZ = 1000 * 1000 * 1000 * 1000 * 1000
+// )
+
+// var (
+// 	vals_si    = [...]int64{1, KILO_SI_SZ, MEGA_SI_SZ, GIGA_SI_SZ, TERA_SI_SZ, PETA_SI_SZ}
+// 	vals_base2 = [...]int64{1, KILO_2_SZ, MEGA_2_SZ, GIGA_2_SZ, TERA_2_SZ, PETA_2_SZ}
+// )
+
+// type Unit int
+
+// const (
+// 	UnitNone Unit = iota
+// 	UnitKilo
+// 	UnitMega
+// 	UnitGiga
+// 	UnitTera
+// 	UnitPeta
+
+// 	UnitExa
+// 	UnitZetta
+// 	UnitYotta
+// 	UnitMax
+// )
+
+// // kB kilobyte
+// // MB megabyte
+// // GB gigabyte
+// // TB terabyte
+// // PB petabyte
+// // EB exabyte
+// // ZB zettabyte
+// // YB yottabyte
+
+// // RENAME
+// func (u Unit) Base2() int64 {
+// 	const N = 1024
+// 	switch u {
+// 	case UnitNone:
+// 		return 1
+// 	case UnitKilo:
+// 		return N
+// 	case UnitMega:
+// 		return N * N
+// 	case UnitGiga:
+// 		return N * N * N
+// 	case UnitTera:
+// 		return N * N * N * N
+// 	case UnitPeta:
+// 		return N * N * N * N * N
+// 	case UnitExa:
+// 		return N * N * N * N * N * N
+// 	// case UnitZetta:
+// 	// 	return N * N * N * N * N * N * N
+// 	// case UnitYotta:
+// 	// 	return N * N * N * N * N * N * N * N
+// 	default:
+// 		panic(fmt.Sprintf("Unit(%d)", int64(u)))
+// 	}
+// }
+
+// func (u Unit) SI() int64 {
+// 	const N = 1000
+// 	switch u {
+// 	case UnitNone:
+// 		return 1
+// 	case UnitKilo:
+// 		return N
+// 	case UnitMega:
+// 		return N * N
+// 	case UnitGiga:
+// 		return N * N * N
+// 	case UnitTera:
+// 		return N * N * N * N
+// 	case UnitPeta:
+// 		return N * N * N * N * N
+// 	case UnitExa:
+// 		return N * N * N * N * N * N
+// 	// case UnitZetta:
+// 	// 	return N * N * N * N * N * N * N
+// 	// case UnitYotta:
+// 	// 	return N * N * N * N * N * N * N * N
+// 	default:
+// 		panic(fmt.Sprintf("Unit(%d)", int64(u)))
+// 	}
+// }
+
+// var unitp = [...]Unit{UnitNone, UnitKilo, UnitMega, UnitGiga, UnitTera, UnitPeta}
+
+// func AdjustUnit(val float64) (float64, Unit) {
+// 	valp := vals_base2 // WARN
+// 	abval := math.Abs(val)
+// 	var unit Unit
+// 	var sz Unit
+// 	if abval != 0 {
+// 		sz = Unit(math.Ilogb(abval) / 10)
+// 		fmt.Println("SZ:", sz, math.Ilogb(abval))
+// 	}
+// 	if sz < UnitMax {
+// 		unit = unitp[sz]
+// 		val /= float64(valp[sz])
+// 	}
+// 	return val, unit
+// }
+
+// func PrintHumanVal(n float64) {
+// 	// n *= 512
+// 	bytes, unit := AdjustUnit(n)
+
+// 	// if (bytes == 0)
+// 	// 	(void)printf("  0B");
+// 	// else if (bytes > 10)
+// 	// 	(void)printf("%3.0f%c", bytes, "BKMGTPE"[unit]);
+// 	// else
+// 	// 	(void)printf("%3.1f%c", bytes, "BKMGTPE"[unit]);
+
+// 	if bytes == 0 {
+// 		fmt.Println("  0B")
+// 	} else if bytes > 10 {
+// 		fmt.Printf("%3.0f%c\n", bytes, "BKMGTPE"[unit])
+// 	} else {
+// 		fmt.Printf("%3.1f%c\n", bytes, "BKMGTPE"[unit])
+// 	}
+// }
 
 const SectorSize = 4096
 
@@ -110,13 +248,38 @@ type Walker struct {
 	Exclude GlobSet
 }
 
-func (w *Walker) Walk(path string, de fastwalk.DirEntry) error {
-	if de.Type().IsRegular() {
-		var stat syscall.Stat_t
-		err := syscall.Lstat(path, &stat)
-		if err == nil {
-			atomic.AddInt64((*int64)(&w.Size), stat.Size)
+func dirEntrySize(path string, de fs.DirEntry) (int64, bool) {
+	typ := de.Type()
+	if typ == fs.ModeSymlink {
+		fi, err := fastwalk.StatDirEntry(path, de)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "%s: %s\n", path, err)
+			}
+			return 0, false
 		}
+		typ = fi.Mode().Type()
+	}
+	if typ.IsRegular() {
+		info, err := de.Info()
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "%s: %s\n", path, err)
+			}
+			return 0, false
+		}
+		return info.Size(), true
+	}
+	return 0, false
+}
+
+func (w *Walker) Walk(path string, de fs.DirEntry, err error) error {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", path, err)
+		return nil
+	}
+	if size, ok := dirEntrySize(path, de); ok && size > 0 {
+		atomic.AddInt64((*int64)(&w.Size), size)
 	}
 	return nil
 }
@@ -189,10 +352,7 @@ Loop:
 				<-gate
 				wg.Done()
 			}()
-			// WARN WARN WARN
-			// WARN WARN WARN
 			size, err := walkPath(path)
-			// size, err := walkPathSize(path)
 			if err != nil {
 				log.Println("error:", err)
 				return
@@ -328,8 +488,111 @@ func (e *Exclude) Path(path string) bool {
 }
 */
 
+type dotWalker struct {
+	// files sync.Map // WARN: top-level files
+	m sync.Map
+
+	// TODO: we could use a map since we pre-allocate it,
+	// but theres a race if a file is added between reading
+	// the directory and the call to fastwalk.Walk
+	//
+	// m map[string]*int64
+}
+
+// func pathRoot(path string) (string, bool) {
+// 	for i := 0; i < len(path); i++ {
+// 		if os.IsPathSeparator(path[i]) {
+// 			return path[:i], true
+// 		}
+// 	}
+// 	return path, false
+// }
+
+func pathRoot(path string) string {
+	if len(path) > 2 && path[0] == '.' && os.IsPathSeparator(path[1]) {
+		path = path[2:]
+	}
+	for i := 0; i < len(path); i++ {
+		if os.IsPathSeparator(path[i]) {
+			return path[:i]
+		}
+	}
+	return path
+}
+
+func (w *dotWalker) Walk(path string, de fs.DirEntry, err error) error {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %s\n", path, err)
+		return nil
+	}
+	if size, ok := dirEntrySize(path, de); ok && size > 0 {
+		root := pathRoot(path)
+		v, ok := w.m.Load(root)
+		if !ok {
+			v, _ = w.m.LoadOrStore(root, new(int64))
+			log.Println("missing key:", root) // WARN
+		}
+		if atomic.AddInt64(v.(*int64), size) < 0 {
+			log.Printf("overflow: %s", root)
+		}
+	}
+	return nil
+}
+
+func (w *dotWalker) Run() error {
+	names, err := readdirnames(".")
+	if err != nil {
+		return err
+	}
+	// TODO: use a regular map
+	for _, name := range names {
+		w.m.Store(name, new(int64))
+	}
+
+	// exitCode := 0
+	if err := fastwalk.Walk(nil, ".", w.Walk); err != nil {
+		log.Println("error: walk:", err)
+		// exitCode = 1
+	}
+
+	var szs []FileSize
+	w.m.Range(func(key, value interface{}) bool {
+		szs = append(szs, FileSize{
+			Name: key.(string),
+			Size: Size(*value.(*int64)),
+		})
+		return true
+	})
+
+	sort.Sort(filesByName(szs))
+	sort.Stable(filesBySize(szs))
+
+	wr := tabwriter.NewWriter(os.Stdout, 0, 0, 0, ' ', tabwriter.AlignRight)
+
+	var total Size
+	for _, sz := range szs {
+		total += sz.Size
+		if err := printSize(wr, sz.Name, sz.Size); err != nil {
+			return err
+		}
+	}
+	if err := printSize(wr, "total", total); err != nil {
+		return err
+	}
+	if err := wr.Flush(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func walkDot() error {
+	return new(dotWalker).Run()
+}
+
 func main() {
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to `file`")
+	flag.BoolVar(&fastwalk.DefaultConfig.Follow, "follow", false, "follow symbolic links")
 	paths, flags := parseFlags()
 
 	if *cpuprofile != "" {
@@ -346,12 +609,24 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	if len(paths) == 1 && paths[0] == "." {
-		var err error
-		paths, err = readdirnames(".")
-		if err != nil {
-			log.Println("error:", err)
-			os.Exit(2)
+	const UseWalkDot = true
+
+	// WARN: make sure that this is applicable for all cases
+	// where filepath.Clean() == "."
+	if len(paths) == 1 && (paths[0] == "." || filepath.Clean(paths[0]) == ".") {
+		if UseWalkDot {
+			if err := walkDot(); err != nil {
+				log.Println("error:", err)
+				os.Exit(1)
+			}
+			return
+		} else {
+			var err error
+			paths, err = readdirnames(".")
+			if err != nil {
+				log.Println("error:", err)
+				os.Exit(2)
+			}
 		}
 	}
 	if len(paths) == 0 {

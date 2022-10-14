@@ -28,6 +28,12 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+var debug = log.New(io.Discard, "[debug] ", log.Lshortfile)
+
+func init() {
+	log.SetFlags(log.Lshortfile)
+}
+
 type FileHash struct {
 	Name, Hash string
 	Size       int64
@@ -53,6 +59,21 @@ type Worker struct {
 	h       hash.Hash
 	files   *FileList
 	newHash func() hash.Hash
+
+	ctx   context.Context
+	runID int64
+	stmt  *sql.Stmt
+}
+
+func (w *Worker) InsertFile(f *FileHash) error {
+	ext := strings.ToLower(filepath.Ext(f.Name))
+	base := filepath.Base(f.Name)
+	var pext *string
+	if ext != "" && ext != base {
+		pext = &ext
+	}
+	_, err := w.stmt.ExecContext(w.ctx, w.runID, f.Name, base, pext, f.Hash, f.Size)
+	return err
 }
 
 func (w *Worker) HashFile(name string) error {
@@ -77,13 +98,21 @@ func (w *Worker) HashFile(name string) error {
 	if err != nil {
 		return err
 	}
-	w.files.Add(FileHash{
+	hashd := time.Since(start)
+	file := FileHash{
 		Name: name,
 		Hash: hex.EncodeToString(w.h.Sum(nil)),
 		Size: fi.Size(),
-	})
-	log.Printf("%s: %s\n", name, time.Since(start))
-	return nil
+	}
+	// TODO: batch these
+	var dbErr error
+	if w.stmt != nil {
+		dbErr = w.InsertFile(&file)
+	}
+	w.files.Add(file)
+	totald := time.Since(start)
+	debug.Printf("%s: hash: %s total: %s\n", name, hashd, totald)
+	return dbErr
 }
 
 //go:embed sql/create_files_table.sql
@@ -115,6 +144,7 @@ func connectionString(raw string) (string, error) {
 	v := u.Query()
 	v.Set("_foreign_keys", "1")
 	v.Set("_cache_size", "-4000")
+	v.Set("_mutex", "full")
 	u.RawQuery = v.Encode()
 	return u.String(), nil
 }
@@ -149,9 +179,7 @@ func realMain() error {
 
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "error: missing PATH")
-		flag.Usage()
-		os.Exit(1)
+		return fmt.Errorf("missing PATH argument")
 	}
 
 	hashFunc := supportedHashFuncs[*hashType]
@@ -161,18 +189,14 @@ func realMain() error {
 	if *numWorkers <= 0 {
 		return fmt.Errorf("non-positive 'workers' argument: %q\n", *numWorkers)
 	}
-
-	if !*verbose {
-		log.SetOutput(io.Discard)
-	} else {
-		log.SetFlags(log.Lshortfile)
-		log.SetPrefix("[gohashfiles] ")
+	if *verbose {
+		debug.SetOutput(os.Stderr)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGQUIT)
 	go func() {
 		<-ctx.Done()
-		fmt.Fprintln(os.Stderr, "warn: received signal stopping...")
+		log.Println("warn: received signal stopping...")
 		stop()
 	}()
 
@@ -190,6 +214,7 @@ func realMain() error {
 		if err != nil {
 			return err
 		}
+		defer db.Close()
 		if err := createTables(ctx, db); err != nil {
 			return err
 		}
@@ -206,6 +231,13 @@ func realMain() error {
 	list := new(FileList)
 	workCh := make(chan string, *numWorkers*4)
 
+	var stmt *sql.Stmt
+	if db != nil {
+		var err error
+		if stmt, err = db.PrepareContext(ctx, InsertFileStmt); err != nil {
+			return err
+		}
+	}
 	for i := 0; i < *numWorkers; i++ {
 		wg.Add(1)
 		go func() {
@@ -213,22 +245,26 @@ func realMain() error {
 			w := &Worker{
 				files:   list,
 				newHash: hashFunc,
+				runID:   runID,
+				stmt:    stmt,
+				ctx:     ctx,
 			}
 			for name := range workCh {
 				if err := w.HashFile(name); err != nil {
-					fmt.Fprintf(os.Stderr, "error: %s: %v\n", name, err)
+					log.Printf("error: %s: %v\n", name, err)
 				}
 			}
 		}()
 	}
 
 	for _, dir := range flag.Args() {
-		log.Println("walking:", dir)
-		done := ctx.Done()
+		dir = filepath.Clean(dir)
+		debug.Println("walking:", dir)
 
+		done := ctx.Done()
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: walking: %s: %v\n", path, err)
+				log.Printf("error: walking: %s: %v\n", path, err)
 				return nil
 			}
 			typ := d.Type()
@@ -241,58 +277,58 @@ func realMain() error {
 			}
 			switch {
 			case typ.IsDir():
-				if globExclude.Match(path) {
-					log.Println("skipping directory:", path)
+				if globExclude.Exclude(path) {
+					debug.Println("skipping directory:", path)
 					return filepath.SkipDir
 				}
 			case typ.IsRegular():
-				if !globExclude.Match(path) {
+				if !globExclude.Exclude(path) {
 					select {
 					case workCh <- path:
 					case <-done:
 						return ctx.Err()
 					}
 				} else {
-					log.Println("skipping file:", path)
+					debug.Println("skipping file:", path)
 				}
 			}
 			return nil
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: walking path: %s: %v", dir, err)
+			log.Printf("error: walking path: %s: %v", dir, err)
 		}
 	}
 	close(workCh)
 	wg.Wait()
 
 	if db != nil {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		stmt, err := tx.PrepareContext(ctx, InsertFileStmt)
-		if err != nil {
-			return err
-		}
-		for _, f := range list.Files() {
-			ext := strings.ToLower(filepath.Ext(f.Name))
-			base := filepath.Base(f.Name)
-			var pext *string
-			if ext != "" && ext != base {
-				pext = &ext
-			}
-			_, err := stmt.ExecContext(ctx, runID, f.Name, base, pext, f.Hash, f.Size)
-			if err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		if err := db.Close(); err != nil {
-			return err
-		}
+		// tx, err := db.BeginTx(ctx, nil)
+		// if err != nil {
+		// 	return err
+		// }
+		// stmt, err := tx.PrepareContext(ctx, InsertFileStmt)
+		// if err != nil {
+		// 	return err
+		// }
+		// for _, f := range list.Files() {
+		// 	ext := strings.ToLower(filepath.Ext(f.Name))
+		// 	base := filepath.Base(f.Name)
+		// 	var pext *string
+		// 	if ext != "" && ext != base {
+		// 		pext = &ext
+		// 	}
+		// 	_, err := stmt.ExecContext(ctx, runID, f.Name, base, pext, f.Hash, f.Size)
+		// 	if err != nil {
+		// 		tx.Rollback()
+		// 		return err
+		// 	}
+		// }
+		// if err := tx.Commit(); err != nil {
+		// 	return err
+		// }
+		// if err := db.Close(); err != nil {
+		// 	return err
+		// }
 	} else {
 		// TODO: do we care about / want this?
 		m := make(map[string][]string, len(list.Files()))

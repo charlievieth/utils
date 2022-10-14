@@ -73,6 +73,18 @@ func (gs *GlobSet) Set(s string) error {
 	return nil
 }
 
+func (g *GlobSet) Exclude(name string) bool {
+	if g == nil {
+		return false
+	}
+	for _, g := range g.globs {
+		if g.Match(name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *GlobSet) Match(name string) bool {
 	if g == nil {
 		return true

@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/charlievieth/utils/pathutils"
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
@@ -163,46 +163,6 @@ func main() {
 // 	return !found
 // }
 
-func processStdin(trim, lineBuffer bool, delim byte) error {
-	var (
-		bw *bufio.Writer
-		w  io.Writer = os.Stdout
-	)
-	if !lineBuffer {
-		bw = bufio.NewWriter(os.Stdout)
-		w = bw
-	}
-
-	r := pathutils.NewReader(bufio.NewReaderSize(os.Stdin, 8192))
-	seen := make(map[string]struct{}, 128)
-
-	var err error
-	for {
-		b, er := r.ReadBytes(delim)
-		if trim {
-			b = trimSpace(b)
-		}
-		if len(b) != 0 {
-			if _, ok := seen[string(b)]; !ok {
-				seen[string(b)] = struct{}{}
-				if _, ew := w.Write(append(b, '\n')); ew != nil {
-					if er == nil || er == io.EOF {
-						er = ew
-					}
-				}
-			}
-		}
-		if er != nil {
-			err = er
-			break
-		}
-	}
-	if bw != nil {
-		bw.Flush()
-	}
-	return err
-}
-
 type Line struct {
 	N    int
 	Data []byte
@@ -266,6 +226,10 @@ func processStdinParallel(trim, lineBuffer bool, delim byte) error {
 */
 
 func xmain() {
+	root := cobra.Command{
+		Short: "gouniq [FILE]",
+	}
+
 	// flag.Usage = func() {
 	// 	fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
 	// 	flag.PrintDefaults()
@@ -277,4 +241,6 @@ func xmain() {
 	_ = trimspace
 	_ = zeroDelim
 	_ = isTerm
+
+	root.Execute()
 }

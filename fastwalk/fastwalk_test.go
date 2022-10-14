@@ -9,8 +9,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -34,6 +36,32 @@ func formatFileModes(m map[string]os.FileMode) string {
 		fmt.Fprintf(&buf, "%-20s: %v\n", k, m[k])
 	}
 	return buf.String()
+}
+
+func writeFile(filename string, data interface{}, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	switch v := data.(type) {
+	case []byte:
+		_, err = f.Write(v)
+	case string:
+		_, err = f.WriteString(v)
+	case io.Reader:
+		_, err = io.Copy(f, v)
+	default:
+		f.Close()
+		return &os.PathError{Op: "WriteFile", Path: filename,
+			Err: fmt.Errorf("invalid data type: %T", data)}
+	}
+	if err1 := f.Close(); err1 != nil && err == nil {
+		err = err1
+	}
+	return err
 }
 
 func symlink(t testing.TB, oldname, newname string) error {
@@ -312,10 +340,7 @@ func TestFastWalk_SymlinkLoop(t *testing.T) {
 	}
 	defer os.RemoveAll(tempdir)
 
-	if err := os.MkdirAll(tempdir+"/src/", 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := ioutil.WriteFile(tempdir+"/src/foo.go", []byte("hello"), 0644); err != nil {
+	if err := writeFile(tempdir+"/src/foo.go", "hello", 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := symlink(t, "../src", tempdir+"/src/loop"); err != nil {
@@ -347,11 +372,7 @@ func TestFastWalk_Error(t *testing.T) {
 		"bar/bar.go",
 		"skip/skip.go",
 	} {
-		name := filepath.Join(tmp, child)
-		if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(name, []byte(child), 0644); err != nil {
+		if err := writeFile(filepath.Join(tmp, child), child, 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -378,9 +399,102 @@ func TestFastWalk_ErrNotExist(t *testing.T) {
 	}
 }
 
+func diffFileMaps(t testing.TB, got, want map[string]os.FileMode) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Log("cannot diff files:", err)
+	}
+	tempdir, err := os.MkdirTemp(t.TempDir(), "diff-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotName := filepath.Join(tempdir, "/got")
+	wantName := filepath.Join(tempdir, "/want")
+	if err := writeFile(gotName, formatFileModes(got), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(wantName, formatFileModes(want), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("git", "diff", "--no-index", "--color=always", "want", "got")
+	cmd.Dir = tempdir
+	out, err := cmd.CombinedOutput()
+	out = bytes.TrimSpace(out)
+	if err != nil && bytes.Contains(out, []byte("error:")) {
+		t.Fatalf("error running command: %q: %v\n### Output\n%s\n####\n",
+			cmd.Args, err, out)
+		return
+	}
+	t.Logf("## Diff:\n%s\n", bytes.TrimSpace(out))
+}
+
 func TestFastWalk_ErrPermission(t *testing.T) {
+	tempdir := t.TempDir()
+	want := map[string]os.FileMode{
+		"":     os.ModeDir,
+		"/bad": os.ModeDir,
+	}
+	for i := 0; i < runtime.NumCPU()*4; i++ {
+		dir := fmt.Sprintf("/d%03d", i)
+		name := fmt.Sprintf("%s/f%03d.txt", dir, i)
+		if err := writeFile(filepath.Join(tempdir, name), "data", 0644); err != nil {
+			t.Fatal(err)
+		}
+		want[name] = 0
+		want[filepath.Dir(name)] = os.ModeDir
+	}
+
+	filename := filepath.Join(tempdir, "/bad/bad.txt")
+	if err := writeFile(filename, "data", 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Make the directory unreadable
+	dirname := filepath.Dir(filename)
+	if err := os.Chmod(dirname, 0355); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(filename); err != nil {
+			t.Error(err)
+		}
+		if err := os.Remove(dirname); err != nil {
+			t.Error(err)
+		}
+	})
+
+	got := map[string]os.FileMode{}
+	var mu sync.Mutex
+	err := fastwalk.Walk(nil, tempdir, func(path string, de fastwalk.DirEntry) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !strings.HasPrefix(path, tempdir) {
+			t.Errorf("bogus prefix on %q, expect %q", path, tempdir)
+		}
+		key := filepath.ToSlash(strings.TrimPrefix(path, tempdir))
+		if old, dup := got[key]; dup {
+			t.Errorf("callback called twice for key %q: %v -> %v", key, old, de.Type())
+		}
+		got[key] = de.Type()
+		return nil
+	})
+	if err != nil {
+		t.Error("Walk:", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("walk mismatch.\n got:\n%v\nwant:\n%v", formatFileModes(got), formatFileModes(want))
+		diffFileMaps(t, got, want)
+	}
+
+	// err := fastwalk.Walk(nil, tmp, func(_ string, _ fastwalk.DirEntry) error {
+	// 	return nil
+	// })
+
+	// if _, err := os.Lstat(filename); err == nil {
+	// 	t.Fatal(err)
+	// }
+
 	// TODO: `mkdir bad && chmod 0375 bad && rmdir bad`
-	t.Skip("TODO: implement test")
+	// t.Skip("TODO: implement test")
 }
 
 var benchDir = flag.String("benchdir", runtime.GOROOT(), "The directory to scan for BenchmarkFastWalk")

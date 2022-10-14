@@ -265,6 +265,7 @@ func realMain() error {
 		Use: "fastwalk: [OPTIONS] [PATH...]",
 	}
 	flags := root.Flags()
+	flags.SortFlags = false
 
 	// TODO: support `rg` style globs
 	//

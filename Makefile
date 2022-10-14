@@ -76,7 +76,11 @@ pathutils: extname gobasename godirname
 rgsort:
 	@cd ./rgsort && go install
 
+.PHONY: jq-completion
+jq-completion:
+	@cd ./jq-completion && go install
+
 # Install frequently used utilities
 all: escape-regex format-json frequency ghopen godu gouniq gowd \
 	isbinary linecount subl-completion timestamp pathutils \
-	watchman-completion rgsort
+	watchman-completion rgsort jq-completion

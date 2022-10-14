@@ -677,6 +677,7 @@ func New(pattern string) (*Glob, error) {
 	// 	1. Join matchers between '*', here: `?abc?`
 
 	inStar := false
+	_ = inStar // WARN: HERE HERE HERE
 	for i, cs := range chunks {
 		switch cs.tok {
 		case Literal:
@@ -723,13 +724,13 @@ func New(pattern string) (*Glob, error) {
 }
 
 func main() {
-	{
-		s := "abcFooxzy"
-		m := matchContains("zy")
-		i := m.Match(s)
-		fmt.Println(i, s[i:])
-		return
-	}
+	// {
+	// 	s := "abcFooxzy"
+	// 	m := matchContains("zy")
+	// 	i := m.Match(s)
+	// 	fmt.Println(i, s[i:])
+	// 	return
+	// }
 	r, err := parseRange("[^[a-zABC[:digit:]!@]")
 	if err != nil {
 		Fatal(err)

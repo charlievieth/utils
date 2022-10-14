@@ -97,14 +97,7 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 	return r.buf, err
 }
 
-func trimSpaceLeft(s []byte) []byte {
-	if n := len(s); n != 0 && s[n-1] == ' ' {
-		return s[:n-1]
-	}
-	return s
-}
-
-func Collect(r *Reader, delim byte, ignoreCase bool, stop <-chan struct{}) ([]Line, bool, error) {
+func Collect(r *Reader, delim byte, stop <-chan struct{}) ([]Line, bool, error) {
 	var timeout bool
 	var err error
 	lines := make([]Line, 0, 128)
@@ -113,15 +106,7 @@ Loop:
 	for i := 1; ; i++ {
 		b, e := r.ReadBytes(delim)
 		if len(b) != 0 {
-			raw := string(b)
-			noColor := ReplaceANSIIString(raw)
-			if ignoreCase {
-				noColor = strings.ToLower(noColor)
-			}
-			lines = append(lines, Line{
-				Raw:     raw,
-				NoColor: noColor,
-			})
+			lines = append(lines, Line{Raw: string(b)})
 		}
 		if e != nil {
 			if e != io.EOF {
@@ -157,8 +142,16 @@ func PrintLines(w io.Writer, lines []Line) error {
 	return b.Flush()
 }
 
-func fixupLines(lines []Line, ignoreCase bool) []Line {
-	numWorkers := len(lines) / 4096
+// TODO: is `fd` fast enough to justify this? AKA: are we actually
+// saturating the CPU when reading from `fd` because if we aren't
+// then this is a waste of time.
+//
+// We can also fire off parallel workers to do this during the
+// read.
+func createLineSortKeys(lines []Line, ignoreCase bool) []Line {
+	const N = 8192 // TODO: tune this
+
+	numWorkers := len(lines) / N
 	if numWorkers <= 1 {
 		for i := range lines {
 			nocolor := ReplaceANSIIString(lines[i].Raw)
@@ -167,16 +160,17 @@ func fixupLines(lines []Line, ignoreCase bool) []Line {
 			}
 			lines[i].NoColor = nocolor
 		}
+		return lines
 	}
+
 	if numWorkers > runtime.NumCPU() {
 		numWorkers = runtime.NumCPU()
 	}
-
 	var wg sync.WaitGroup
 	gate := make(chan struct{}, numWorkers)
-	for i := 0; i < len(lines); i += 4096 {
+	for i := 0; i < len(lines); i += N {
 		wg.Add(1)
-		go func(lines []Line) {
+		go func(lines []Line, ignoreCase bool) {
 			gate <- struct{}{}
 			defer func() {
 				wg.Done()
@@ -185,11 +179,13 @@ func fixupLines(lines []Line, ignoreCase bool) []Line {
 			for i := range lines {
 				nocolor := ReplaceANSIIString(lines[i].Raw)
 				if ignoreCase {
+					// TODO: consider using a []byte and doing this
+					// in-place to save some allocs.
 					nocolor = strings.ToLower(nocolor)
 				}
 				lines[i].NoColor = nocolor
 			}
-		}(lines[i : i+4096])
+		}(lines[i:i+N], ignoreCase)
 	}
 	wg.Wait()
 
@@ -215,28 +211,25 @@ func main() {
 	}
 	var timeout bool
 	go func(delim byte) {
-		lines, timeout, err = Collect(r, delim, *ignoreCase, stop)
+		lines, timeout, err = Collect(r, delim, stop)
 		close(done)
 	}(delim)
 
-	to := time.After(1)
-	// to := time.After(time.Millisecond * 500)
+	to := time.After(time.Second * 500) // WARN
+	// to := time.After(time.Millisecond * 500) // WARN
 	select {
 	case <-done:
 	case <-to:
-		stop <- struct{}{}
+		close(stop)
 		<-done
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: read: %s\n", err)
 	}
 
-	if *ignoreCase {
-		for i := range lines {
-			lines[i].NoColor = strings.ToLower(lines[i].NoColor)
-		}
-	}
+	lines = createLineSortKeys(lines, *ignoreCase)
 	sort.Sort(&lineByNoColor{Lines: lines})
+
 	if err := PrintLines(os.Stdout, lines); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: print: %s\n", err)
 	}
