@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/signal"
@@ -81,13 +82,26 @@ func (w *Worker) HashFile(name string) error {
 	return nil
 }
 
-const DropFileTableStmt = `DROP TABLE IF EXISTS files;`
-
 //go:embed sql/create_files_table.sql
 var CreateFileTableStmt string
 
+//go:embed sql/create_run_ids_table_stmt.sql
+var CreateRunIDsTableStmt string
+
 //go:embed sql/insert_files_statement.sql
 var InsertFileStmt string
+
+func createTables(ctx context.Context, db *sql.DB) error {
+	for _, stmt := range []string{
+		CreateRunIDsTableStmt,
+		CreateFileTableStmt,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func connectionString(raw string) (string, error) {
 	u, err := url.Parse(raw)
@@ -101,25 +115,17 @@ func connectionString(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func dropFilesTable(ctx context.Context, db *sql.DB) error {
-	const query = `
-	SELECT EXISTS(
-		SELECT name FROM sqlite_master WHERE type='table' AND name='files'
-	);`
-	var exists bool
-	if err := db.QueryRowContext(ctx, query).Scan(&exists); err != nil {
-		return err
-	}
-	if exists {
-		fmt.Fprintln(os.Stderr, "WARNING: dropping `files` table")
-		db.Exec(DropFileTableStmt) // no error check
-	}
-	return nil
-}
-
 var supportedHashFuncs = map[string]func() hash.Hash{
 	"md5":    md5.New,
 	"sha256": sha256.New,
+}
+
+func defaultNumWorkers() int {
+	numCPU := runtime.NumCPU()
+	if numCPU < 4 {
+		numCPU = 4
+	}
+	return numCPU
 }
 
 func realMain() error {
@@ -130,7 +136,8 @@ func realMain() error {
 	}
 	hashType := flag.String("hash", "md5", "hash function to use (md5 or sha256)")
 	hashDB := flag.Bool("db", false, "write hashes to a sqlite database")
-	hashDBName := flag.String("db-name", "hashes.sqlite", "name of hash database (implies -db)")
+	hashDBName := flag.String("db-name", "", "name of hash database (implies -db)")
+	numWorkers := flag.Int("workers", defaultNumWorkers(), "number of parallel workers to use")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "error: missing PATH")
@@ -140,7 +147,11 @@ func realMain() error {
 
 	hashFunc := supportedHashFuncs[*hashType]
 	if hashFunc == nil {
-		fmt.Fprintln(os.Stderr, "error: invalid 'hash' function: %q", *hashType)
+		fmt.Fprintf(os.Stderr, "error: invalid 'hash' function: %q\n", *hashType)
+		os.Exit(1)
+	}
+	if *numWorkers <= 0 {
+		fmt.Fprintf(os.Stderr, "error: non-positive 'workers' argument: %q\n", *numWorkers)
 		os.Exit(1)
 	}
 
@@ -152,10 +163,11 @@ func realMain() error {
 	}()
 
 	var db *sql.DB
-	if *hashDBName != "" {
-		*hashDB = true
-	}
+	var runID int64
 	if *hashDB {
+		if *hashDBName == "" {
+			*hashDBName = "hashes.sqlite"
+		}
 		connStr, err := connectionString(*hashDBName)
 		if err != nil {
 			return err
@@ -164,24 +176,23 @@ func realMain() error {
 		if err != nil {
 			return err
 		}
-		if err := dropFilesTable(ctx, db); err != nil {
+		if err := createTables(ctx, db); err != nil {
 			return err
 		}
-		if _, err := db.ExecContext(ctx, CreateFileTableStmt); err != nil {
+		const runIDQuery = `INSERT INTO run_ids DEFAULT VALUES RETURNING id;`
+		if err := db.QueryRowContext(ctx, runIDQuery).Scan(&runID); err != nil {
 			return err
 		}
-	}
-
-	numCPU := runtime.NumCPU()
-	if numCPU < 4 {
-		numCPU = 4
+		if runID == 0 {
+			return fmt.Errorf("non-positive run_id: %d", runID)
+		}
 	}
 
 	wg := new(sync.WaitGroup)
 	list := new(FileList)
-	workCh := make(chan string, numCPU*4)
+	workCh := make(chan string, *numWorkers*4)
 
-	for i := 0; i < numCPU; i++ {
+	for i := 0; i < *numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -200,12 +211,21 @@ func realMain() error {
 	for _, path := range flag.Args() {
 		fmt.Println("Walking:", path) // TODO: use log instead
 		done := ctx.Done()
-		err := filepath.Walk(path, func(path string, fi os.FileInfo, err error) error {
+
+		err := filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: walking: %s: %v\n", path, err)
 				return nil
 			}
-			if fi.Mode().IsRegular() {
+			typ := d.Type()
+			if typ&fs.ModeSymlink != 0 {
+				fi, err := os.Stat(path)
+				if err != nil {
+					return err
+				}
+				typ = fi.Mode().Type()
+			}
+			if typ.IsRegular() {
 				select {
 				case workCh <- path:
 				case <-done:
@@ -237,7 +257,7 @@ func realMain() error {
 			if ext != "" && ext != base {
 				pext = &ext
 			}
-			_, err := stmt.ExecContext(ctx, f.Name, base, pext, f.Hash, f.Size)
+			_, err := stmt.ExecContext(ctx, runID, f.Name, base, pext, f.Hash, f.Size)
 			if err != nil {
 				tx.Rollback()
 				return err
@@ -278,42 +298,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-/*
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-	b := make([]byte, 0, 128)
-	for _, l := range lines {
-		b = b[:0]
-		b = strconv.AppendInt(b, int64(l.N), 10)
-		b = append(b, ':')
-		b = append(b, '\t')
-		b = append(b, l.S...)
-		b = append(b, '\n')
-		if _, err := w.Write(b); err != nil {
-			Fatal(err)
-		}
-	}
-	if err := w.Flush(); err != nil {
-		Fatal(err)
-	}
-*/
-
-func Fatal(err interface{}) {
-	if err == nil {
-		return
-	}
-	var s string
-	if _, file, line, ok := runtime.Caller(1); ok && file != "" {
-		s = fmt.Sprintf("Error (%s:%d)", filepath.Base(file), line)
-	} else {
-		s = "Error"
-	}
-	switch err.(type) {
-	case error, string, fmt.Stringer:
-		fmt.Fprintf(os.Stderr, "%s: %s\n", s, err)
-	default:
-		fmt.Fprintf(os.Stderr, "%s: %#v\n", s, err)
-	}
-	os.Exit(1)
 }
