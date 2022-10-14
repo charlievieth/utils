@@ -23,6 +23,7 @@ import (
 	"sync"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -55,6 +56,7 @@ type Worker struct {
 }
 
 func (w *Worker) HashFile(name string) error {
+	start := time.Now()
 	f, err := os.Open(name)
 	if err != nil {
 		return err
@@ -80,6 +82,7 @@ func (w *Worker) HashFile(name string) error {
 		Hash: hex.EncodeToString(w.h.Sum(nil)),
 		Size: fi.Size(),
 	})
+	log.Printf("%s: %s\n", name, time.Since(start))
 	return nil
 }
 
