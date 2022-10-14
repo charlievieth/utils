@@ -12,6 +12,7 @@ import (
 	"hash"
 	"io"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -136,8 +137,13 @@ func realMain() error {
 	}
 	hashType := flag.String("hash", "md5", "hash function to use (md5 or sha256)")
 	hashDB := flag.Bool("db", false, "write hashes to a sqlite database")
+	verbose := flag.Bool("verbose", false, "print verbose output")
 	hashDBName := flag.String("db-name", "", "name of hash database (implies -db)")
 	numWorkers := flag.Int("workers", defaultNumWorkers(), "number of parallel workers to use")
+
+	var globExclude GlobSet
+	flag.Var(&globExclude, "exclude", "exclude files GLOB")
+
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "error: missing PATH")
@@ -147,12 +153,17 @@ func realMain() error {
 
 	hashFunc := supportedHashFuncs[*hashType]
 	if hashFunc == nil {
-		fmt.Fprintf(os.Stderr, "error: invalid 'hash' function: %q\n", *hashType)
-		os.Exit(1)
+		return fmt.Errorf("invalid 'hash' function: %q\n", *hashType)
 	}
 	if *numWorkers <= 0 {
-		fmt.Fprintf(os.Stderr, "error: non-positive 'workers' argument: %q\n", *numWorkers)
-		os.Exit(1)
+		return fmt.Errorf("non-positive 'workers' argument: %q\n", *numWorkers)
+	}
+
+	if !*verbose {
+		log.SetOutput(io.Discard)
+	} else {
+		log.SetFlags(log.Lshortfile)
+		log.SetPrefix("[gohashfiles] ")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGQUIT)
@@ -208,11 +219,11 @@ func realMain() error {
 		}()
 	}
 
-	for _, path := range flag.Args() {
-		fmt.Println("Walking:", path) // TODO: use log instead
+	for _, dir := range flag.Args() {
+		log.Println("walking:", dir)
 		done := ctx.Done()
 
-		err := filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: walking: %s: %v\n", path, err)
 				return nil
@@ -225,17 +236,27 @@ func realMain() error {
 				}
 				typ = fi.Mode().Type()
 			}
-			if typ.IsRegular() {
-				select {
-				case workCh <- path:
-				case <-done:
-					return ctx.Err()
+			switch {
+			case typ.IsDir():
+				if globExclude.Match(path) {
+					log.Println("skipping directory:", path)
+					return filepath.SkipDir
+				}
+			case typ.IsRegular():
+				if !globExclude.Match(path) {
+					select {
+					case workCh <- path:
+					case <-done:
+						return ctx.Err()
+					}
+				} else {
+					log.Println("skipping file:", path)
 				}
 			}
 			return nil
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: walking path: %s: %v", path, err)
+			fmt.Fprintf(os.Stderr, "error: walking path: %s: %v", dir, err)
 		}
 	}
 	close(workCh)
