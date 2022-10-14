@@ -32,6 +32,7 @@ var debug = log.New(io.Discard, "[debug] ", log.Lshortfile)
 
 func init() {
 	log.SetFlags(log.Lshortfile)
+	log.SetPrefix("[error] ")
 }
 
 type FileHash struct {
@@ -63,6 +64,25 @@ type Worker struct {
 	ctx   context.Context
 	runID int64
 	stmt  *sql.Stmt
+}
+
+func (w *Worker) doWork(wg *sync.WaitGroup, ch <-chan string) {
+	defer wg.Done()
+	done := w.ctx.Done()
+	n := 0
+	for name := range ch {
+		if err := w.HashFile(name); err != nil {
+			log.Printf("%s: %v\n", name, err)
+		}
+		// check of the channel is closed
+		if n != 0 && n%128 == 0 {
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
+	}
 }
 
 func (w *Worker) InsertFile(f *FileHash) error {
@@ -145,6 +165,7 @@ func connectionString(raw string) (string, error) {
 	v.Set("_foreign_keys", "1")
 	v.Set("_cache_size", "-4000")
 	v.Set("_mutex", "full")
+	v.Set("_journal_mode", "TRUNCATE")
 	u.RawQuery = v.Encode()
 	return u.String(), nil
 }
@@ -160,6 +181,10 @@ func defaultNumWorkers() int {
 		numCPU = 4
 	}
 	return numCPU
+}
+
+func ignoreError(err error) bool {
+	return err == nil || os.IsPermission(err) || os.IsNotExist(err)
 }
 
 func realMain() error {
@@ -227,34 +252,36 @@ func realMain() error {
 		}
 	}
 
+	var stmt *sql.Stmt
+	var tx *sql.Tx
+	if db != nil {
+		var err error
+		if tx, err = db.Begin(); err != nil {
+			return err
+		}
+		if stmt, err = tx.Prepare(InsertFileStmt); err != nil {
+			return err
+		}
+		defer func() {
+			stmt.Close()
+			tx.Commit()
+		}()
+	}
+
 	wg := new(sync.WaitGroup)
 	list := new(FileList)
 	workCh := make(chan string, *numWorkers*4)
 
-	var stmt *sql.Stmt
-	if db != nil {
-		var err error
-		if stmt, err = db.PrepareContext(ctx, InsertFileStmt); err != nil {
-			return err
-		}
-	}
 	for i := 0; i < *numWorkers; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			w := &Worker{
-				files:   list,
-				newHash: hashFunc,
-				runID:   runID,
-				stmt:    stmt,
-				ctx:     ctx,
-			}
-			for name := range workCh {
-				if err := w.HashFile(name); err != nil {
-					log.Printf("error: %s: %v\n", name, err)
-				}
-			}
-		}()
+		w := &Worker{
+			files:   list,
+			newHash: hashFunc,
+			runID:   runID,
+			stmt:    stmt,
+			ctx:     ctx,
+		}
+		go w.doWork(wg, workCh)
 	}
 
 	for _, dir := range flag.Args() {
@@ -264,14 +291,21 @@ func realMain() error {
 		done := ctx.Done()
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				log.Printf("error: walking: %s: %v\n", path, err)
+				log.Printf("walking: %s: %v\n", path, err)
+				if !ignoreError(err) {
+					return err
+				}
 				return nil
 			}
 			typ := d.Type()
 			if typ&fs.ModeSymlink != 0 {
 				fi, err := os.Stat(path)
 				if err != nil {
-					return err
+					log.Printf("walking: %s: %v\n", path, err)
+					if !ignoreError(err) {
+						return err
+					}
+					return nil
 				}
 				typ = fi.Mode().Type()
 			}
@@ -295,11 +329,18 @@ func realMain() error {
 			return nil
 		})
 		if err != nil {
-			log.Printf("error: walking path: %s: %v", dir, err)
+			log.Printf("walking path: %s: %v\n", dir, err)
 		}
 	}
 	close(workCh)
 	wg.Wait()
+
+	if err := tx.Commit(); err != nil {
+		log.Println("commiting transaction:", err)
+	}
+	if err := db.Close(); err != nil {
+		log.Println("closing database connection:", err)
+	}
 
 	if db != nil {
 		// tx, err := db.BeginTx(ctx, nil)
