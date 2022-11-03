@@ -3,7 +3,7 @@
 
 package main
 
-import "github.com/charlievieth/utils/fastwalk"
+import "github.com/charlievieth/fastwalk"
 
 func GetFileSize(_ string, de fastwalk.DirEntry) (int64, error) {
 	var size int64

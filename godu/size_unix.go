@@ -6,7 +6,7 @@ package main
 import (
 	"syscall"
 
-	"github.com/charlievieth/utils/fastwalk"
+	"github.com/charlievieth/fastwalk"
 )
 
 func GetFileSize(path string, _ fastwalk.DirEntry) (int64, error) {
