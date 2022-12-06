@@ -42,6 +42,22 @@ type FileHash struct {
 	RunID      int64
 }
 
+func (f *FileHash) Base() string {
+	return filepath.Base(f.Name)
+}
+
+func (f *FileHash) Ext() string {
+	return strings.ToLower(filepath.Ext(f.Name))
+}
+
+func (f *FileHash) PExt() (pext *string) {
+	ext := f.Ext()
+	if ext != "" && ext != f.Base() {
+		pext = &ext
+	}
+	return pext
+}
+
 type FileList struct {
 	mu    sync.Mutex
 	files []FileHash
@@ -88,33 +104,121 @@ func (w *Worker) doWork(wg *sync.WaitGroup, ch <-chan string) {
 	}
 }
 
-// type BatchInerster struct {
-// 	mu    sync.Mutex
-// 	db    *sql.DB
-// 	stmt  *sql.Stmt
-// 	tx    *sql.Tx
-// 	count int64
-// }
+type BatchInerster struct {
+	mu           sync.Mutex
+	db           *sql.DB
+	ctx          context.Context
+	preparedStmt *sql.Stmt
+	stmt         *sql.Stmt
+	tx           *sql.Tx
+	count        int64
+	ch           chan *FileHash
+	done         chan struct{}
+	once         sync.Once
+	wg           *sync.WaitGroup
+}
 
-// func (b *BatchInerster) Insert(f *FileHash) error {
-// 	ext := strings.ToLower(filepath.Ext(f.Name))
-// 	base := filepath.Base(f.Name)
-// 	var pext *string
-// 	if ext != "" && ext != base {
-// 		pext = &ext
-// 	}
-// 	b.mu.Lock()
-// 	defer b.mu.Unlock()
-// 	_, err := b.stmt.Exec(f.RunID, f.Name, base, pext, f.Hash, f.Size)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	b.count++
-// 	if b.count == 128 {
-//
-// 	}
-// 	return err
-// }
+func (b *BatchInerster) bulkInsert(files []*FileHash) error {
+	// Use this context to rollback the insert on error,
+	// but don't link it to the main context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, InsertFileStmt)
+	if err != nil {
+		return err
+	}
+	for i, f := range files {
+		_, err := stmt.Exec(f.RunID, f.Name, f.Base(), f.PExt(), f.Hash, f.Size)
+		if err != nil {
+			return err
+		}
+		files[i] = nil
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := stmt.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b *BatchInerster) run(wg *sync.WaitGroup) {
+	defer close(b.done)
+	defer wg.Done()
+	files := make([]*FileHash, 0, 4096)
+
+	insert := func() {
+		if len(files) == 0 {
+			return
+		}
+		if err := b.bulkInsert(files); err != nil {
+			log.Println("inserting records:", err)
+		}
+		files = files[:0]
+	}
+	defer insert()
+
+	done := b.ctx.Done()
+	tick := time.NewTicker(time.Second) // Flush every second
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			insert()
+		case <-done:
+			return
+		case file, ok := <-b.ch:
+			if !ok {
+				return
+			}
+			files = append(files, file)
+			if len(files) == cap(files) {
+				insert()
+			}
+		}
+	}
+}
+
+func (b *BatchInerster) init() {
+	if b.ch == nil {
+		b.ch = make(chan *FileHash, 64)
+	}
+	if b.done == nil {
+		b.done = make(chan struct{}, 1)
+	}
+	if b.wg == nil {
+		b.wg = new(sync.WaitGroup)
+	}
+	go b.run(b.wg)
+}
+
+func (b *BatchInerster) Insert(f *FileHash) error {
+	b.once.Do(b.init)
+	select {
+	case b.ch <- f:
+		// ok
+	case <-b.ctx.Done():
+		// drop ???
+	case <-b.done:
+		// WARN: return an error?
+	}
+	return nil
+}
+
+func (b *BatchInerster) Wait() {
+	select {
+	case <-b.ch:
+	default:
+		close(b.ch)
+	}
+	b.wg.Wait()
+}
 
 func (w *Worker) InsertFile(f *FileHash) error {
 	ext := strings.ToLower(filepath.Ext(f.Name))
@@ -233,7 +337,7 @@ type jsonFileEncoder struct {
 }
 
 func newJSONFileEncoder(name string) (*jsonFileEncoder, error) {
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +375,63 @@ func (e *jsonFileEncoder) Close() error {
 	return e.file.Close()
 }
 
+func loadSeenPathsJSON(filename string) (map[string]struct{}, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	seen := make(map[string]struct{})
+	for {
+		var file FileHash
+		err := dec.Decode(&file)
+		if err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
+			break
+		}
+		seen[file.Name] = struct{}{}
+	}
+	return seen, nil
+}
+
+func loadSeenPaths(filename string) (map[string]struct{}, error) {
+	if strings.HasSuffix(filename, ".json") {
+		return loadSeenPathsJSON(filename)
+	}
+	connStr, err := connectionString(filename)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite3", connStr)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`SELECT DISTINCT(path) FROM files;`)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		seen[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return seen, nil
+}
+
 func realMain() error {
+	const defaultDatabaseName = "hashes.sqlite"
+
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s: PATHs...\n",
 			filepath.Base(os.Args[0]))
@@ -283,8 +443,8 @@ func realMain() error {
 	hashDBName := flag.String("db-name", "", "name of hash database (implies -db)")
 	jsonFile := flag.String("json", "", "name of file to write JSON to")
 	numWorkers := flag.Int("workers", defaultNumWorkers(), "number of parallel workers to use")
-
-	_ = jsonFile
+	skipSeen := flag.String("skip-seen", "", "skip files already recorded in the provided JSON file or database")
+	noAbsPaths := flag.Bool("no-abs", false, "don't convert path arguments to absolute")
 
 	var globExclude GlobSet
 	flag.Var(&globExclude, "exclude", "exclude files GLOB")
@@ -313,6 +473,14 @@ func realMain() error {
 			return err
 		}
 	}
+	var seenPaths map[string]struct{}
+	if *skipSeen != "" {
+		var err error
+		seenPaths, err = loadSeenPaths(*skipSeen)
+		if err != nil {
+			return err
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGQUIT)
 	go func() {
@@ -325,7 +493,7 @@ func realMain() error {
 	var runID int64
 	if *hashDB {
 		if *hashDBName == "" {
-			*hashDBName = "hashes.sqlite"
+			*hashDBName = defaultDatabaseName
 		}
 		connStr, err := connectionString(*hashDBName)
 		if err != nil {
@@ -382,9 +550,17 @@ func realMain() error {
 	}
 
 	for _, dir := range flag.Args() {
-		dir = filepath.Clean(dir)
 		debug.Println("walking:", dir)
-
+		if *noAbsPaths {
+			dir = filepath.Clean(dir)
+		} else {
+			abs, err := filepath.Abs(dir)
+			if err != nil {
+				log.Printf("walking path: %s: %v\n", dir, err)
+				continue
+			}
+			dir = abs
+		}
 		done := ctx.Done()
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -413,6 +589,10 @@ func realMain() error {
 					return filepath.SkipDir
 				}
 			case typ.IsRegular():
+				// WARN: make sure this works as expected
+				if _, ok := seenPaths[path]; ok {
+					return nil
+				}
 				if !globExclude.Exclude(path) {
 					select {
 					case workCh <- path:
@@ -492,10 +672,31 @@ func realMain() error {
 }
 
 func main() {
-	if err := realMain(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	f, err := os.Open("/Users/cvieth/Desktop/windows_file_hashes_partial.json")
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	seen := make(map[string]struct{})
+	for {
+		var file FileHash
+		err := dec.Decode(&file)
+		if err != nil {
+			if err != io.EOF {
+				log.Fatal(err)
+			}
+			break
+		}
+		seen[file.Name] = struct{}{}
+	}
+	runtime.GC()
+	time.Sleep(time.Minute * 5)
+
+	// if err := realMain(); err != nil {
+	// 	fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	// 	os.Exit(1)
+	// }
 }
 
 /*
