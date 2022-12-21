@@ -25,7 +25,7 @@ func AudioMD5(ctx context.Context, filename string) (string, error) {
 	cmd.Stderr = &stderr
 	cmd.Dir = filepath.Dir(filename)
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%w: %s: %s", filepath.Base(filename),
+		return "", fmt.Errorf("%w: %s: %s", err, filepath.Base(filename),
 			strings.TrimSpace(stderr.String()))
 	}
 
