@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,7 +19,19 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	_ "github.com/mattn/go-sqlite3"
 )
+
+func init() {
+	log.SetFlags(log.Lshortfile)
+	log.SetOutput(os.Stderr)
+}
+
+type FileHash struct {
+	Hash string `json:"hash"`
+	Size int64  `json:"size"`
+}
 
 func AudioMD5(ctx context.Context, filename string) (string, error) {
 	var stdout, stderr bytes.Buffer
@@ -37,17 +52,99 @@ func AudioMD5(ctx context.Context, filename string) (string, error) {
 	return hash, nil
 }
 
-type FileHash struct {
-	Hash string
-	Size int64
+func connectionString(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	v := u.Query()
+	v.Set("_cache_size", "-4000")
+	v.Set("_mutex", "full")
+	u.RawQuery = v.Encode()
+	return u.String(), nil
+}
+
+//go:embed sql/create_audio_files_table.sql
+var CreateAudioFilesTableStmt string
+
+//go:embed sql/insert_audio_file_stmt.sql
+var InsertAudioFileStmt string
+
+// TODO: use sqlite
+func OpenDatabase(ctx context.Context, filename string) (*sql.DB, error) {
+	dsn := fmt.Sprintf("file:%s?_cache_size=-4000&_mutex=full", filename)
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Ping(); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(CreateAudioFilesTableStmt); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
+
+func BulkInsertHashes(ctx context.Context, db *sql.DB, hashes map[string]FileHash) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	exit := func(err error) error {
+		tx.Rollback()
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, InsertAudioFileStmt)
+	if err != nil {
+		return exit(err)
+	}
+	for name, h := range hashes {
+		fi, err := os.Stat(name)
+		if err != nil {
+			return exit(err)
+		}
+		if _, err := stmt.Exec(name, h.Hash, h.Size, fi.ModTime()); err != nil {
+			return exit(err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		return exit(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if _, err := db.Exec("VACUUM"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func main() {
+	// WARN
+	// {
+	// 	data, err := os.ReadFile("audio_hashes.json")
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	var hashes map[string]FileHash
+	// 	if err := json.Unmarshal(data, &hashes); err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	ctx := context.Background()
+	// 	db, err := OpenDatabase(ctx, "audio_hashes.sqlite3")
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	defer db.Close()
+	// 	if err := BulkInsertHashes(ctx, db, hashes); err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	return
+	// }
+
 	verbose := flag.Bool("v", false, "verbose output")
 	flag.Parse()
-
-	log.SetFlags(log.Lshortfile)
-	log.SetOutput(os.Stderr)
 
 	root, err := filepath.Abs(flag.Arg(0))
 	if err != nil {

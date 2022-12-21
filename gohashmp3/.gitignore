@@ -1,4 +1,6 @@
 /*.json
+/*.sqlite
+/*.sqlite3
 /gohashmp3
 /gohashmp3.exe
 /vendor
