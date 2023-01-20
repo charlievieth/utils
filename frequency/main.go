@@ -9,11 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"text/tabwriter"
 
 	"github.com/charlievieth/num"
+	"golang.org/x/exp/slices"
 )
 
 type Reader struct {
@@ -47,35 +47,6 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 type Line struct {
 	S string
 	N int
-}
-
-type byName []Line
-
-func (b byName) Len() int           { return len(b) }
-func (b byName) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-func (b byName) Less(i, j int) bool { return b[i].S < b[j].S }
-
-type byCount []Line
-
-func (b byCount) Len() int           { return len(b) }
-func (b byCount) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-func (b byCount) Less(i, j int) bool { return b[i].N < b[j].N }
-
-type byCountReverse []Line
-
-func (b byCountReverse) Len() int           { return len(b) }
-func (b byCountReverse) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
-func (b byCountReverse) Less(i, j int) bool { return b[i].N >= b[j].N }
-
-type byNameCount []Line
-
-func (b byNameCount) Len() int      { return len(b) }
-func (b byNameCount) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
-
-func (b byNameCount) Less(i, j int) bool {
-	l1 := &b[i]
-	l2 := &b[j]
-	return l1.N < l2.N || (l1.N == l2.N && l1.S < l2.S)
 }
 
 // TODO: remove ignore case option
@@ -114,10 +85,13 @@ func ReadLines(r *Reader, delim byte, ignoreCase, reverseOrder bool) ([]Line, er
 	}
 
 	if reverseOrder {
-		sort.Sort(byName(lines))
-		sort.Stable(byCountReverse(lines))
+		slices.SortFunc(lines, func(a, b Line) bool {
+			return a.N > b.N || (a.N == b.N && a.S < b.S)
+		})
 	} else {
-		sort.Sort(byNameCount(lines))
+		slices.SortFunc(lines, func(a, b Line) bool {
+			return a.N < b.N || (a.N == b.N && a.S < b.S)
+		})
 	}
 
 	return lines, nil

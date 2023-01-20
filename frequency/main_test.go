@@ -44,7 +44,7 @@ func TestReadline(t *testing.T) {
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	lines, err := ReadLines(&r, '\n', false)
+	lines, err := ReadLines(&r, '\n', false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestReadline_Hard(t *testing.T) {
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	lines, err := ReadLines(&r, '\n', false)
+	lines, err := ReadLines(&r, '\n', false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,13 +74,15 @@ func benchmarkReadLines(b *testing.B, data []byte, ignoreCase bool) {
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	if _, err := ReadLines(&r, '\n', ignoreCase); err != nil {
+	if _, err := ReadLines(&r, '\n', ignoreCase, false); err != nil {
 		b.Fatal(err)
 	}
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		rd.Seek(0, 0)
-		if _, err := ReadLines(&r, '\n', ignoreCase); err != nil {
+		if _, err := ReadLines(&r, '\n', ignoreCase, false); err != nil {
 			b.Fatal(err)
 		}
 	}
