@@ -6,15 +6,20 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"text/tabwriter"
 
 	"github.com/charlievieth/num"
 	"golang.org/x/exp/slices"
 )
+
+func init() {
+	log.SetFlags(log.Lshortfile)
+	log.SetOutput(os.Stderr)
+}
 
 type Reader struct {
 	b   *bufio.Reader
@@ -109,7 +114,6 @@ func main() {
 	caseInsensitive := flag.Bool("i", false, "sort names case-insensitively")
 	flag.Parse()
 
-	// parseFlags()
 	r := Reader{
 		b:   bufio.NewReaderSize(os.Stdin, 64*1024),
 		buf: make([]byte, 128),
@@ -120,7 +124,7 @@ func main() {
 	}
 	lines, err := ReadLines(&r, delim, *caseInsensitive, *reverseOrder)
 	if err != nil {
-		Fatal(err)
+		log.Fatalln(err)
 	}
 	r = Reader{} // clear reference
 
@@ -142,37 +146,13 @@ func main() {
 		b = append(b, l.S...)
 		b = append(b, '\n')
 		if _, err := w.Write(b); err != nil {
-			Fatal(err)
+			log.Fatalln(err)
 		}
 	}
 	if err := w.Flush(); err != nil {
-		Fatal(err)
+		log.Fatalln(err)
 	}
 	if err := bw.Flush(); err != nil {
-		Fatal(err)
-	}
-}
-
-func Fatal(err interface{}) {
-	if err != nil {
-		var s string
-		if _, file, line, ok := runtime.Caller(1); ok && file != "" {
-			s = fmt.Sprintf("%s:%d", filepath.Base(file), line)
-		}
-		switch err.(type) {
-		case error, string:
-			if s != "" {
-				fmt.Fprintf(os.Stderr, "Error (%s): %s\n", s, err)
-			} else {
-				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			}
-		default:
-			if s != "" {
-				fmt.Fprintf(os.Stderr, "Error (%s): %#v\n", s, err)
-			} else {
-				fmt.Fprintf(os.Stderr, "Error: %#v\n", err)
-			}
-		}
-		os.Exit(1)
+		log.Fatalln(err)
 	}
 }
