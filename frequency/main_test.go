@@ -7,68 +7,99 @@ import (
 	"encoding/gob"
 	"io"
 	"os"
-	"reflect"
+	"sync"
 	"testing"
+
+	"golang.org/x/exp/slices"
+)
+
+const (
+	Dotfiles    = "testdata/dotfiles.txt.gz"
+	ExpDotfiles = "testdata/dotfiles.exp.gob.gz"
+	Gofiles     = "testdata/go.txt.gz"
+	ExpGofiles  = "testdata/go.exp.gob.gz"
 )
 
 var (
-	Dotfiles    []byte
-	ExpDotfiles []Line
-	Gofiles     []byte
-	ExpGofiles  []Line
+	decodeCache sync.Map
+	gunzipCache sync.Map
 )
 
-func init() {
-	var err error
-	Dotfiles, err = gunzip("testdata/dotfiles.txt.gz")
-	if err != nil {
-		Fatal(err)
+func decode(t testing.TB, name string) []Line {
+	if v, ok := decodeCache.Load(name); ok {
+		return *(v.(*[]Line))
 	}
-	ExpDotfiles, err = decode("testdata/dotfiles.exp.gob.gz")
+	lines, err := doDecode(name)
 	if err != nil {
-		Fatal(err)
+		t.Fatal(err)
 	}
-	Gofiles, err = gunzip("testdata/go.txt.gz")
-	if err != nil {
-		Fatal(err)
+	decodeCache.Store(name, &lines)
+	return lines
+}
+
+func gunzip(t testing.TB, name string) []byte {
+	if v, ok := decodeCache.Load(name); ok {
+		return v.([]byte)
 	}
-	ExpGofiles, err = decode("testdata/go.exp.gob.gz")
+	data, err := doGunzip(name)
 	if err != nil {
-		Fatal(err)
+		t.Fatal(err)
+	}
+	decodeCache.Store(name, data)
+	return data
+}
+
+func doGunzip(name string) ([]byte, error) {
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return nil, err
+	}
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(r)
+}
+
+func doDecode(name string) ([]Line, error) {
+	data, err := doGunzip(name)
+	if err != nil {
+		return nil, err
+	}
+	var lines []Line
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&lines); err != nil {
+		return nil, err
+	}
+	return lines, nil
+}
+
+func testReadline(t *testing.T, dataFile, expFile string) {
+	data := gunzip(t, dataFile)
+	exp := decode(t, expFile)
+	rd := bytes.NewReader(data)
+	r := Reader{
+		b:   bufio.NewReader(rd),
+		buf: make([]byte, 128),
+	}
+	lines, err := ReadLines(&r, '\n', false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(lines, exp) {
+		t.Error(dataFile)
 	}
 }
 
 func TestReadline(t *testing.T) {
-	rd := bytes.NewReader(Dotfiles)
-	r := Reader{
-		b:   bufio.NewReader(rd),
-		buf: make([]byte, 128),
-	}
-	lines, err := ReadLines(&r, '\n', false, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(lines, ExpDotfiles) {
-		t.Error("Error: Dotfiles")
-	}
+	testReadline(t, Dotfiles, ExpDotfiles)
 }
 
 func TestReadline_Hard(t *testing.T) {
-	rd := bytes.NewReader(Gofiles)
-	r := Reader{
-		b:   bufio.NewReader(rd),
-		buf: make([]byte, 128),
-	}
-	lines, err := ReadLines(&r, '\n', false, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(lines, ExpGofiles) {
-		t.Error("Error: ExpGofiles")
-	}
+	testReadline(t, Gofiles, ExpGofiles)
 }
 
-func benchmarkReadLines(b *testing.B, data []byte, ignoreCase bool) {
+func benchmarkReadLines(b *testing.B, name string, ignoreCase bool) {
+	data := gunzip(b, name)
 	rd := bytes.NewReader(data)
 	r := Reader{
 		b:   bufio.NewReader(rd),
@@ -102,41 +133,4 @@ func BenchmarkReadLines_Long(b *testing.B) {
 
 func BenchmarkReadLines_Long_Case(b *testing.B) {
 	benchmarkReadLines(b, Gofiles, true)
-}
-
-func decode(name string) ([]Line, error) {
-	f, err := os.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	r, err := gzip.NewReader(f)
-	if err != nil {
-		return nil, err
-	}
-	var lines []Line
-	if err := gob.NewDecoder(r).Decode(&lines); err != nil {
-		return nil, err
-	}
-	if err := r.Close(); err != nil {
-		return nil, err
-	}
-	return lines, nil
-}
-
-func gunzip(name string) ([]byte, error) {
-	f, err := os.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	r, err := gzip.NewReader(f)
-	if err != nil {
-		return nil, err
-	}
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
