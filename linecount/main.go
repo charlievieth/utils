@@ -187,10 +187,6 @@ func (w *walker) Walk(path string, de fs.DirEntry, err error) error {
 	}
 	typ := de.Type()
 	if typ.IsRegular() {
-		// WARN: this may ignore shell scripts!
-		if executableMode(typ) {
-			return nil
-		}
 		ext := normalizeExt(path)
 		if ignoredExtension(ext) {
 			return nil
