@@ -260,6 +260,21 @@ func isDir(name string) bool {
 	return err == nil && fi.IsDir()
 }
 
+func generateShellCompletion(cmd *cobra.Command, shell string) error {
+	switch shell {
+	case "bash":
+		return cmd.Root().GenBashCompletion(os.Stdout)
+	case "zsh":
+		return cmd.Root().GenZshCompletion(os.Stdout)
+	case "fish":
+		return cmd.Root().GenFishCompletion(os.Stdout, true)
+	case "powershell":
+		return cmd.Root().GenPowerShellCompletionWithDesc(os.Stdout)
+	default:
+		return fmt.Errorf("invalid shell: %q", shell)
+	}
+}
+
 func realMain() error {
 	root := cobra.Command{
 		Use: "fastwalk: [OPTIONS] [PATH...]",
@@ -281,6 +296,8 @@ func realMain() error {
 	// TODO: add an option to ignore duplicate files (expensive)
 	flags.BoolP("follow", "L", false,
 		"Follow symbolic links while traversing directories.")
+
+	flags.String("completion", "", "Generate base completion for SHELL")
 
 	cpuprofile := flags.String("cpuprofile", "", "write cpu profile to `file`")
 	memprofile := flags.String("memprofile", "", "write memory profile to `file`")
@@ -326,6 +343,11 @@ func realMain() error {
 	}
 
 	root.RunE = func(cmd *cobra.Command, args []string) error {
+		// Generate shell completion and exit
+		if shell, err := cmd.Flags().GetString("completion"); err == nil && shell != "" {
+			return generateShellCompletion(cmd, shell)
+		}
+
 		exclude, err := cmd.Flags().GetStringArray("exclude")
 		if err != nil {
 			return err
