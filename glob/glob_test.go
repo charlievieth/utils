@@ -25,6 +25,10 @@ var matchTests = []matchTest{
 	{"a/**/*.c", "a/b/m.c", true},
 	{"a/**/*", "a/b/m.c", true},
 	{"a/*b*/**", "a/b/m.c", true},
+	{"*.c", "a/b/m.c", true},
+	{"m.*", "a/b/m.c", true},
+	{"*m.c*", "a/b/m.c", true},
+	{"m.c", "a/b/m.c", true},
 
 	// Negate tests
 	{"!*.c", "m.c", false},
@@ -166,32 +170,64 @@ func TestGlobSetString(t *testing.T) {
 	}
 }
 
-func BenchmarkFilepathGlob(b *testing.B) {
+func benchmarkFilepathGlob(b *testing.B, pattern, path string) {
 	for i := 0; i < b.N; i++ {
-		// _, _ = filepath.Match("*.go", "glob_test.go")
-		// _, _ = filepath.Match("*.[ch]", "header.h")
-
-		// _, _ = filepath.Match("*.[ch]", "some_header.h")
-		_, _ = filepath.Match("some_header.?", "some_header.h")
+		ok, _ := filepath.Match(pattern, path)
+		if !ok {
+			b.Fatal("bad match")
+		}
 	}
+}
+
+func BenchmarkFilepathGlob(b *testing.B) {
+	b.Run("Prefix", func(b *testing.B) {
+		benchmarkFilepathGlob(b, "package_*", "package_test.go")
+	})
+	b.Run("Suffix", func(b *testing.B) {
+		benchmarkFilepathGlob(b, "*.go", "package_test.go")
+	})
+	b.Run("Contains", func(b *testing.B) {
+		benchmarkFilepathGlob(b, "*_test.*", "package_test.go")
+	})
+	b.Run("Exact", func(b *testing.B) {
+		benchmarkFilepathGlob(b, "package_test.go", "package_test.go")
+	})
+}
+
+func benchmarkGlob(b *testing.B, pattern, path string) {
+	g, err := Parse(pattern)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < b.N; i++ {
+		if !g.Match(path) {
+			b.Fatal("bad match")
+		}
+	}
+}
+
+func BenchmarkGlob(b *testing.B) {
+	b.Run("Prefix", func(b *testing.B) {
+		benchmarkGlob(b, "package_*", "package_test.go")
+	})
+	b.Run("Suffix", func(b *testing.B) {
+		benchmarkGlob(b, "*.go", "package_test.go")
+	})
+	b.Run("Contains", func(b *testing.B) {
+		benchmarkGlob(b, "*_test.*", "package_test.go")
+	})
+	b.Run("Exact", func(b *testing.B) {
+		benchmarkGlob(b, "package_test.go", "package_test.go")
+	})
 }
 
 // TODO: regexp is faster in some cases
 func BenchmarkRegexp(b *testing.B) {
+	b.Skip("TODO: remove me")
 	// re := regexp.MustCompile(`.*\.[ch]$`)
 	re := regexp.MustCompile(`^some_header.h$`)
 	for i := 0; i < b.N; i++ {
 		// re.MatchString("header.h")
 		re.MatchString("some_header.h")
-	}
-}
-
-func BenchmarkGlob(b *testing.B) {
-	g, err := Parse("*.go")
-	if err != nil {
-		b.Fatal(err)
-	}
-	for i := 0; i < b.N; i++ {
-		_ = g.Match("glob_test.go")
 	}
 }

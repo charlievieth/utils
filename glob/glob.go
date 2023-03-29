@@ -132,13 +132,15 @@ func (g *Glob) match(path string) bool {
 	case MatchGlob:
 		match, _ = filepath.Match(g.pattern, path)
 	case MatchPrefix:
-		match = strings.HasPrefix(path, g.pattern)
+		match = strings.HasPrefix(path, g.pattern) ||
+			strings.HasPrefix(filepath.Base(path), g.pattern)
 	case MatchSuffix:
-		match = strings.HasSuffix(path, g.pattern)
+		match = strings.HasSuffix(path, g.pattern) ||
+			strings.HasSuffix(filepath.Base(path), g.pattern)
 	case MatchContains:
-		match = strings.Contains(path, g.pattern)
+		match = strings.Contains(filepath.Base(path), g.pattern)
 	case MatchExact:
-		match = path == g.pattern
+		match = (path == g.pattern || filepath.Base(path) == g.pattern)
 	}
 	return match
 }
