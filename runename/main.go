@@ -26,7 +26,7 @@ func main() {
 			fmt.Fprint(tw, "\n")
 		}
 		for _, r := range s {
-			_, err := fmt.Fprintf(tw, "%q:\t%s\n", r, runenames.Name(r))
+			_, err := fmt.Fprintf(tw, "%q:\t%s (%U)\n", r, runenames.Name(r), r)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
 				os.Exit(1)
