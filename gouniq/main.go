@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/spf13/cobra"
-	"golang.org/x/term"
+	"path/filepath"
 )
 
 type Reader struct {
@@ -47,8 +45,11 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 }
 
 func isSpace(r byte) bool {
-	return r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r' ||
-		r == ' ' || r == 0x85 || r == 0xA0
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', 0x85, 0xA0:
+		return true
+	}
+	return false
 }
 
 func trimSpace(s []byte) []byte {
@@ -62,44 +63,20 @@ func trimSpace(s []byte) []byte {
 	return s[:i+1]
 }
 
-func UniqLines(in io.Reader, delim byte) ([]string, error) {
+func StreamLines(in *os.File, out io.Writer, delim byte, ignoreSpace bool) error {
+	const bufsz = 64 * 1024
 	r := Reader{
-		b:   bufio.NewReader(in),
+		b:   bufio.NewReaderSize(in, bufsz),
 		buf: make([]byte, 128),
 	}
-	seen := make(map[string]struct{})
-	lines := make([]string, 0, 64)
-	var err error
-	for {
-		b, e := r.ReadBytes(delim)
-		b = trimSpace(b)
-		if len(b) != 0 {
-			if _, ok := seen[string(b)]; !ok {
-				seen[string(b)] = struct{}{}
-				lines = append(lines, string(b))
-			}
-		}
-		if e != nil {
-			if e != io.EOF {
-				err = e
-			}
-			break
-		}
-	}
-	return lines, err
-}
-
-func StreamLines(in io.Reader, out io.Writer, delim byte) error {
-	r := Reader{
-		b:   bufio.NewReaderSize(in, 8192),
-		buf: make([]byte, 128),
-	}
-	w := bufio.NewWriterSize(out, 8192)
+	w := bufio.NewWriterSize(out, bufsz)
 	seen := make(map[string]struct{})
 	var err error
 	for {
 		b, er := r.ReadBytes(delim)
-		b = trimSpace(b)
+		if ignoreSpace {
+			b = trimSpace(b)
+		}
 		if len(b) != 0 {
 			if _, ok := seen[string(b)]; !ok {
 				seen[string(b)] = struct{}{}
@@ -122,22 +99,35 @@ func StreamLines(in io.Reader, out io.Writer, delim byte) error {
 	return w.Flush()
 }
 
-func processFile(name string) error {
+func processFile(name string, delim byte, ignoreSpace bool) error {
 	f, err := os.Open(name)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return StreamLines(f, os.Stdout, '\n')
+	return StreamLines(f, os.Stdout, delim, ignoreSpace)
 }
 
 func realMain() error {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stdout, "Usage %s: [FILE]...\n"+
+			"Print unique lines from [FILE]... or STDIN in the order they are received.\n",
+			filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
+	nullDelim := flag.Bool("z", false, "line delimiter is NUL, not newline")
+	stripSpace := flag.Bool("s", false, "strip trailing and leading whitespace")
 	flag.Parse()
+
+	delim := byte('\n')
+	if *nullDelim {
+		delim = 0
+	}
 	if flag.NArg() == 0 {
-		return StreamLines(os.Stdin, os.Stdout, '\n')
+		return StreamLines(os.Stdin, os.Stdout, delim, *stripSpace)
 	}
 	for _, name := range flag.Args() {
-		if err := processFile(name); err != nil {
+		if err := processFile(name, delim, *stripSpace); err != nil {
 			return err
 		}
 	}
@@ -146,101 +136,7 @@ func realMain() error {
 
 func main() {
 	if err := realMain(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-}
-
-// type Set struct {
-// 	m map[string]struct{}
-// }
-
-// func (s *Set) Add(b []byte) bool {
-// 	_, found := s.m[string(b)]
-// 	if !found {
-// 		s.m[string(b)] = struct{}{}
-// 	}
-// 	return !found
-// }
-
-type Line struct {
-	N    int
-	Data []byte
-}
-
-// CEV: this is a bad/hard idea
-/*
-func processStdinParallel(trim, lineBuffer bool, delim byte) error {
-	var (
-		bw *bufio.Writer
-		w  io.Writer = os.Stdout
-	)
-	if !lineBuffer {
-		bw = bufio.NewWriter(os.Stdout)
-		w = bw
-	}
-
-	var lines []*Line
-	numCPU := runtime.NumCPU()
-	if numCPU > 4 {
-		numCPU--
-	}
-	ch := make(chan *Line, numCPU*8)
-	for i := 0; i < numCPU; i++ {
-		go func() {
-			for ll := range ch {
-
-			}
-		}()
-	}
-
-	r := pathutils.NewReader(bufio.NewReaderSize(os.Stdin, 8192))
-	seen := make(map[string]struct{}, 128)
-
-	var err error
-	for {
-		b, er := r.ReadBytes(delim)
-		if trim {
-			b = trimSpace(b)
-		}
-		if len(b) != 0 {
-			if _, ok := seen[string(b)]; !ok {
-				seen[string(b)] = struct{}{}
-				if _, ew := w.Write(append(b, '\n')); ew != nil {
-					if er == nil || er == io.EOF {
-						er = ew
-					}
-				}
-			}
-		}
-		if er != nil {
-			err = er
-			break
-		}
-	}
-	if bw != nil {
-		bw.Flush()
-	}
-	return err
-}
-*/
-
-func xmain() {
-	root := cobra.Command{
-		Short: "gouniq [FILE]",
-	}
-
-	// flag.Usage = func() {
-	// 	fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
-	// 	flag.PrintDefaults()
-	// }
-	trimspace := flag.Bool("s", false, "Trim leading and trailing whitespace form lines.")
-	zeroDelim := flag.Bool("0", false, "Lines are 0/NULL terminated.")
-	isTerm := term.IsTerminal(2)
-
-	_ = trimspace
-	_ = zeroDelim
-	_ = isTerm
-
-	root.Execute()
 }
