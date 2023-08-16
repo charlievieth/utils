@@ -8,10 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
-func tryGoBuild(wd string) (string, error) {
-	pkg, err := build.ImportDir(wd, 0)
+func tryGoBuild(_ string) (string, error) {
+	pkg, err := build.ImportDir(".", 0)
 	if err != nil {
 		return "", err
 	}
@@ -52,18 +54,65 @@ func tryGOPATH(wd string) (string, error) {
 	return "", fmt.Errorf("directory %q is not contianed in Go source directories: %q", wd, srcDirs)
 }
 
+func fileExists(name string) bool {
+	fi, err := os.Stat(name)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+func findModule(root string) (string, error) {
+	dir := root
+	for i := 0; i < 64; i++ {
+		mod := filepath.Join(dir, "go.mod")
+		if fileExists(mod) {
+			return mod, nil
+		}
+		next := filepath.Base(dir)
+		if next == dir {
+			break
+		}
+		dir = next
+	}
+	return "", fmt.Errorf("go.mod not found in tree: %s", root)
+}
+
+// TODO: this does not appear to always work
+func tryModule(wd string) (string, error) {
+	mod, err := findModule(wd)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(mod)
+	if err != nil {
+		return "", err
+	}
+	pkgPath := modfile.ModulePath(data)
+	if pkgPath == "" {
+		return "", fmt.Errorf("failed to parse module path from: %s", mod)
+	}
+	rel, err := filepath.Rel(filepath.Dir(mod), wd)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." {
+		return pkgPath, nil
+	}
+	return filepath.ToSlash(pkgPath + "/" + rel), nil
+}
+
 func realMain() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 	fns := []func(string) (string, error){
+		tryModule,
 		tryGoBuild,
 		tryGoList,
 		tryGOPATH,
 	}
 	var first error
 	for _, fn := range fns {
+		// path, err := fn(".")
 		path, err := fn(wd)
 		if err == nil {
 			return path, nil
