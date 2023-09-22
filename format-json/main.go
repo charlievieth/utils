@@ -15,41 +15,64 @@ import (
 )
 
 func formatFile(name, indent string, buf *bytes.Buffer) error {
-	f, err := os.OpenFile(name, os.O_RDWR, 0)
+	f, err := os.Open(name)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	buf.Reset()
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", indent)
-	dec := json.NewDecoder(f)
-	for {
-		var m interface{}
-		if err := dec.Decode(&m); err != nil {
-			if err != io.EOF {
-				return err
-			}
-			break // ok
-		}
-		if err := enc.Encode(m); err != nil {
-			return err
-		}
-	}
-
-	if _, err := f.Seek(0, 0); err != nil {
-		return err
-	}
-	n, err := buf.WriteTo(f)
+	fi, err := f.Stat()
 	if err != nil {
 		return err
 	}
-	if err := f.Truncate(n); err != nil {
+
+	dir, base := filepath.Split(name)
+	tmp, err := os.CreateTemp(dir, base+".*")
+	if err != nil {
 		return err
 	}
-	return f.Close()
+	exit := func(err error) error {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+
+	buf.Reset()
+	dec := json.NewDecoder(f)
+	for {
+		var m json.RawMessage
+		if err := dec.Decode(&m); err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			break // ok
+		}
+		buf.Reset()
+		if err = json.Indent(buf, m, "", indent); err != nil {
+			break
+		}
+		buf.WriteByte('\n')
+		if _, err = buf.WriteTo(tmp); err != nil {
+			break
+		}
+	}
+	if err != nil {
+		return exit(err)
+	}
+
+	if err := f.Close(); err != nil {
+		return exit(err)
+	}
+	if err := tmp.Chmod(fi.Mode()); err != nil {
+		return exit(err)
+	}
+	if err := tmp.Close(); err != nil {
+		return exit(err)
+	}
+	if err := os.Rename(tmp.Name(), name); err != nil {
+		return exit(err)
+	}
+	return nil
 }
 
 func formatFiles(names []string, indent string) error {
@@ -103,7 +126,6 @@ func parseFlags() {
 	flag.Parse()
 }
 
-// (dst *bytes.Buffer, src []byte) error
 func main() {
 	parseFlags()
 	var delim string
@@ -119,23 +141,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
-}
-
-func Fatal(err interface{}) {
-	if err == nil {
-		return
-	}
-	var s string
-	if _, file, line, ok := runtime.Caller(1); ok && file != "" {
-		s = fmt.Sprintf("Error (%s:%d)", filepath.Base(file), line)
-	} else {
-		s = "Error"
-	}
-	switch err.(type) {
-	case error, string, fmt.Stringer:
-		fmt.Fprintf(os.Stderr, "%s: %s\n", s, err)
-	default:
-		fmt.Fprintf(os.Stderr, "%s: %#v\n", s, err)
-	}
-	os.Exit(1)
 }
