@@ -90,12 +90,32 @@ func ReadLines(r *Reader, delim byte, ignoreCase, reverseOrder bool) ([]Line, er
 	}
 
 	if reverseOrder {
-		slices.SortFunc(lines, func(a, b Line) bool {
-			return a.N > b.N || (a.N == b.N && a.S < b.S)
+		slices.SortFunc(lines, func(a, b Line) int {
+			switch {
+			case a.N > b.N:
+				return -1
+			case a.N == b.N:
+				if a.S < b.S {
+					return -1
+				}
+				return 0
+			default:
+				return 1
+			}
 		})
 	} else {
-		slices.SortFunc(lines, func(a, b Line) bool {
-			return a.N < b.N || (a.N == b.N && a.S < b.S)
+		slices.SortFunc(lines, func(a, b Line) int {
+			switch {
+			case a.N < b.N:
+				return -1
+			case a.N == b.N:
+				if a.S < b.S {
+					return -1
+				}
+				return 0
+			default:
+				return 1
+			}
 		})
 	}
 
@@ -115,7 +135,7 @@ func main() {
 	flag.Parse()
 
 	r := Reader{
-		b:   bufio.NewReaderSize(os.Stdin, 64*1024),
+		b:   bufio.NewReaderSize(os.Stdin, 96*1024),
 		buf: make([]byte, 128),
 	}
 	delim := byte('\n')

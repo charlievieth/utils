@@ -1,3 +1,4 @@
 frequency
 frequency.exe
 *.txt
+/vendor
