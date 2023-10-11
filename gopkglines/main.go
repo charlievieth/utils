@@ -131,10 +131,10 @@ func LineCount(name string) (int, error) {
 	return bytes.Count(src, []byte{'\n'}), nil
 }
 
-func PromQLPackages() []string {
-	out, err := exec.Command("go", "list", "-json", "github.com/prometheus/prometheus/promql").CombinedOutput()
+func Dependencies(pkgName string) []string {
+	out, err := exec.Command("go", "list", "-json", pkgName).CombinedOutput()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("%s: %s", err, out)
 	}
 	var pkg Package
 	if err := json.Unmarshal(out, &pkg); err != nil {
@@ -146,6 +146,7 @@ func PromQLPackages() []string {
 			a = append(a, s)
 		}
 	}
+	a = append(a, pkgName)
 	sort.Strings(a) // make this consistent
 	return a
 }
@@ -178,7 +179,7 @@ func main() {
 
 	RequirePackage(pkgName)
 
-	out, err := exec.Command("go", append([]string{"list", "-json"}, PromQLPackages()...)...).CombinedOutput()
+	out, err := exec.Command("go", append([]string{"list", "-json"}, Dependencies()...)...).CombinedOutput()
 	if err != nil {
 		log.Fatal(err)
 	}
