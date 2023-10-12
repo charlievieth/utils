@@ -63,7 +63,7 @@ func trimSpace(s []byte) []byte {
 	return s[:i+1]
 }
 
-func StreamLines(in *os.File, out io.Writer, delim byte, ignoreSpace bool) error {
+func StreamLines(in io.Reader, out io.Writer, delim byte, ignoreSpace bool) error {
 	const bufsz = 64 * 1024
 	r := Reader{
 		b:   bufio.NewReaderSize(in, bufsz),
