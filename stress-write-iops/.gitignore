@@ -1,3 +1,4 @@
 /stress-write-iops
 /rescue_file.dat
 /vendor
+*.log

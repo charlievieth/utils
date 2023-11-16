@@ -1,18 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/shirou/gopsutil/v3/disk"
 )
 
 func init() {
@@ -21,114 +27,58 @@ func init() {
 	log.SetFlags(log.Lshortfile)
 }
 
-// type State struct {
-// 	// TODO: this can take a Context
-// 	dirname  string
-// 	next     *atomic.Int64
-// 	complete *atomic.Int64
-// 	errors   *atomic.Int64
-// 	writeCh  chan struct{}
-// }
-
-type Deleter struct {
-	ctx      context.Context
-	writeMu  *sync.RWMutex // locked when too many files are queued
-	complete *atomic.Int64 // # completed writes
-	last     *atomic.Int64 // last deleted write file
-	dirname  string
+type Writer struct {
+	ctx        context.Context
+	next       *atomic.Int64
+	complete   *atomic.Int64
+	writeTime  *atomic.Int64
+	writeBytes *atomic.Int64
+	numWriters int64
+	rr         *rand.Rand
+	data       []byte
+	dirname    string
+	syncFiles  bool // optionally flush files to disk (SLOW!!!)
 }
 
-func (d *Deleter) Run(wg *sync.WaitGroup, writeCh <-chan struct{}) {
-	tick := time.NewTicker(time.Millisecond * 10)
-	defer func() {
-		defer wg.Done()
-		tick.Stop()
-		// First pass at removing directory - will likely error
-		os.RemoveAll(d.dirname)
-	}()
-	done := d.ctx.Done()
-	d.last.Store(1) // 1 based
-
-	// TODO: use multiple deleters to keep up with writes
-	//
-	// // WARN: untested
-	ch := make(chan int64, 4)
-	for i := 0; i < 4; i++ {
-		go func() {
-			for id := range ch {
-				err := os.Remove(d.dirname + "/tmp." + strconv.FormatInt(id, 10))
-				if err != nil {
-					log.Println("delete:", err)
-				}
-			}
-		}()
+func (w *Writer) WriteFile(name string) error {
+	if w.rr.Intn(100) <= 10 {
+		os.ReadFile(name)
 	}
-	defer close(ch)
-
-	for {
-		select {
-		case <-writeCh:
-			n := d.complete.Load()
-			i := d.last.Load()
-			m := n - i // number to delete
-			if m < 50 {
-				break
-			}
-			unlock := false
-			if m >= 500_000 {
-				d.writeMu.Lock() // block writes
-				unlock = true
-				log.Println("WARN: pausing writes: delete queue too large:", m)
-			}
-			for ; i <= n; i++ {
-				ch <- i
-				// err := os.Remove(d.dirname + "/tmp." + strconv.FormatInt(i, 10))
-				// if err != nil {
-				// 	log.Println("delete:", err)
-				// }
-			}
-			d.last.Store(n + 1)
-			if unlock {
-				log.Println("WARN: resuming writes: delete queue drained")
-				d.writeMu.Unlock() // unblock writes
-			}
-		case <-done:
-			return
+	if w.rr.Intn(100) <= 10 {
+		if _, err := os.Lstat(name); err == nil {
+			_ = os.Remove(name) // ignore error
 		}
 	}
-}
-
-type Writer struct {
-	ctx       context.Context
-	next      *atomic.Int64
-	complete  *atomic.Int64
-	writeTime *atomic.Int64
-	writeCh   chan<- struct{}
-	writeMu   *sync.RWMutex // Locked when the delete queue is too large
-	data      []byte
-	dirname   string
-	syncFiles bool // optionally flush files to disk (SLOW!!!)
-}
-
-func (w *Writer) WriteFile() error {
-	w.writeMu.RLock()
-	defer w.writeMu.RUnlock()
-	name := w.dirname + "/tmp." + strconv.FormatInt(w.next.Add(1), 10)
-	t := time.Now()
-	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+
 	exit := func(err error) error {
 		f.Close()
 		os.Remove(name)
 		return err
 	}
-	if _, err := f.Write(w.data); err != nil {
-		return exit(err)
+
+	// Write random sections
+	for i := 0; i < 4; i++ {
+		sz := int64(len(w.data))
+		off := w.rr.Int63n(sz)
+		n := w.rr.Int63n(sz)
+		if off+n > sz {
+			n = sz - off
+		}
+		t := time.Now()
+		if _, err := f.WriteAt(w.data[:n], off); err != nil {
+			return exit(err)
+		}
+		// TODO: sync after each write?
+		w.writeTime.Add(int64(time.Since(t)))
+		w.writeBytes.Add(n)
+		w.complete.Add(1) // WARN: this is now write count
 	}
-	w.writeTime.Add(int64(time.Since(t))) // TODO: post-sync ???
+
 	if w.syncFiles {
 		if err := f.Sync(); err != nil {
 			return exit(err)
@@ -136,11 +86,6 @@ func (w *Writer) WriteFile() error {
 	}
 	if err := f.Close(); err != nil {
 		return exit(err)
-	}
-	w.complete.Add(1)
-	select {
-	case w.writeCh <- struct{}{}:
-	default:
 	}
 	return nil
 }
@@ -152,7 +97,9 @@ func (w *Writer) Run(wg *sync.WaitGroup, interval time.Duration) {
 	for {
 		select {
 		case <-tick.C:
-			if err := w.WriteFile(); err != nil {
+			n := w.next.Add(1) % (w.numWriters * 4)
+			name := w.dirname + "/tmp." + strconv.FormatInt(n, 10)
+			if err := w.WriteFile(name); err != nil {
 				log.Println("write:", err)
 			}
 		case <-w.ctx.Done():
@@ -161,21 +108,135 @@ func (w *Writer) Run(wg *sync.WaitGroup, interval time.Duration) {
 	}
 }
 
-type Delta struct {
-	prev, curr int64
+func dirSize(name string) (int64, error) {
+	// Since we're constantly thrashing this directory
+	// the size is an estimate.
+	des, err := os.ReadDir(name)
+	if err != nil {
+		return 0, err
+	}
+	var size int64
+	for _, d := range des {
+		if !d.Type().IsRegular() {
+			continue
+		}
+		// Ignore errors here
+		if fi, _ := d.Info(); fi != nil {
+			size += fi.Size()
+		}
+	}
+	return size, nil
 }
 
-func (d *Delta) Delta(new int64) int64 {
-	return new - d.prev
-}
+// TODO: rename
+func printAgentDiskLatencyStats(ctx context.Context, wg *sync.WaitGroup, tmpdir string, interval time.Duration) {
+	defer wg.Done()
 
-func (d *Delta) Rate(new int64, dur time.Duration) float64 {
-	return float64(d.Delta(new)) / dur.Seconds()
+	// This is slow so update infrequently
+	tmpSize := new(atomic.Int64)
+	go func() {
+		sz, err := dirSize(tmpdir)
+		if err != nil && !os.IsNotExist(err) {
+			log.Println("dirSize:", err)
+		}
+		tmpSize.Store(sz)
+		tick := time.NewTicker(10 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				sz, err := dirSize(tmpdir)
+				if err != nil && !os.IsNotExist(err) {
+					log.Println("dirSize:", err)
+					continue
+				}
+				tmpSize.Store(sz)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// TODO: use a struct for deltas to make our lives easier
+	var (
+		pRTime      uint64
+		pRCount     uint64
+		pWTime      uint64
+		pWCount     uint64
+		maxRLatency float64
+		maxWLatency float64
+	)
+
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	first := true
+	for {
+		select {
+		case <-tick.C:
+			counters, err := disk.IOCountersWithContext(ctx)
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Println("error: IOCountersWithContext:", err)
+				}
+				return
+			}
+			var rtime, wtime uint64
+			var rcount, wcount uint64
+			for _, c := range counters {
+				rtime += c.ReadTime
+				wtime += c.WriteTime
+				rcount += c.ReadCount
+				wcount += c.WriteCount
+			}
+			if first {
+				pRTime = rtime
+				pWTime = wtime
+				pRCount = rcount
+				pWCount = wcount
+				first = false
+				break
+			}
+			drtime := rtime - pRTime
+			dwtime := wtime - pWTime
+			drcount := rcount - pRCount
+			dwcount := wcount - pWCount
+			wLatency := float64(dwtime) / float64(dwcount)
+			if wLatency > maxWLatency {
+				maxWLatency = wLatency
+			}
+			rLatency := float64(drtime) / float64(drcount)
+			if rLatency > maxRLatency {
+				maxRLatency = rLatency
+			}
+			size := float64(tmpSize.Load()) / (1024 * 1024)
+			fmt.Printf("# latency: write: %.2fms read: %.2fms max_write: %.2fms max_read: %.2fms temp_size: %.2fMiB\n",
+				wLatency, rLatency, maxWLatency, maxRLatency, size)
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func realMain() error {
-	numWriters := flag.Int("n", runtime.NumCPU(), "number of concurrent writers")
-	writeInterval := flag.Duration("d", time.Millisecond/4, "writer interval")
+	flag.Usage = func() {
+		const msg = "Usage of %s:\n" +
+			"Stress disk IO and print latency statistics.\n" +
+			"\n" +
+			"NOTE: use the ./run.bash script for best results.\n" +
+			"\n" +
+			"Example:\n" +
+			"  $ ./run.bash  -n 256 -d 1ns -sync -disk-stat-int 1s\n" +
+			"\n" +
+			"Flags:\n"
+		fmt.Fprintf(flag.CommandLine.Output(), msg, filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+	}
+	numWriters := flag.Int("n", runtime.NumCPU()*4, "number of concurrent writers")
+	writeInterval := flag.Duration("d", time.Nanosecond, "writer interval")
+	syncFiles := flag.Bool("sync", false, "force completion of pending disk writes (flush cache)")
+	syncInterval := flag.Duration("sync-int", 100*time.Millisecond, "sync interval")
+	diskStatInterval := flag.Duration("disk-stat-int", 10*time.Second,
+		"collect and print agent style disk latency stats at this interval")
 	flag.Parse()
 
 	if *numWriters <= 0 || *writeInterval <= 0 {
@@ -190,15 +251,20 @@ func realMain() error {
 	}
 	defer os.RemoveAll(tmpdir)
 
-	log.Println("tempdir:", tmpdir)
+	// Print some useful info
+	log.Println("# NUM_WRITERS: ", *numWriters)
+	log.Println("# TEMPDIR:     ", tmpdir)
+	log.Println("# RESCUE_FILE:  /tmp/rescue_file.dat")
 
 	// Create a rescue file that we can delete if we run out of disk space.
-	if err := Fallocate("rescue_file.dat", 64*1024*1024); err != nil {
+	if err := Fallocate("/tmp/rescue_file.dat", 64*1024*1024); err != nil {
 		log.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// On CTRL-C cleanup and exit
 	sigCtx, sigStop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
@@ -216,62 +282,55 @@ func realMain() error {
 	}()
 
 	var (
-		wg       sync.WaitGroup
-		next     atomic.Int64
-		complete atomic.Int64
+		wg         sync.WaitGroup
+		next       atomic.Int64
+		complete   atomic.Int64
+		writeTime  atomic.Int64
+		writeBytes atomic.Int64
 	)
 
-	writeCh := make(chan struct{}, 1)
-	d := &Deleter{
-		ctx:      ctx,
-		dirname:  tmpdir,
-		complete: &complete,
-		last:     new(atomic.Int64),
-		writeMu:  new(sync.RWMutex),
+	// WARN: careful with size
+	writeData := bytes.Repeat([]byte("0123"), (4*1024*1024)/len("0123"))
+	numFiles := int64(*numWriters)
+	if numFiles < 8 {
+		numFiles = 8
 	}
-	wg.Add(1)
-	go d.Run(&wg, writeCh)
-
 	for i := 0; i < *numWriters; i++ {
 		w := &Writer{
-			ctx:       ctx,
-			dirname:   tmpdir,
-			data:      make([]byte, 4096), // TODO: make this harder
-			next:      &next,
-			complete:  &complete,
-			writeCh:   writeCh,
-			writeTime: new(atomic.Int64),
-			writeMu:   d.writeMu,
-			syncFiles: true, // TOOD: this should be configurable
+			ctx:        ctx,
+			dirname:    tmpdir,
+			data:       writeData, // TODO: create local copy?
+			next:       &next,
+			complete:   &complete,
+			writeTime:  &writeTime,
+			writeBytes: &writeBytes,
+			numWriters: numFiles,
+			rr:         rand.New(rand.NewSource(time.Now().UnixNano())),
+			syncFiles:  true, // TOOD: this should be configurable
 		}
 		wg.Add(1)
 		go w.Run(&wg, *writeInterval)
 	}
 
-	wg.Add(1)
-	go func(wg *sync.WaitGroup) {
-		defer wg.Done()
-		tick := time.NewTicker(time.Second)
-		last := time.Now()
-		var prevNext int64
-		var prevComplete int64
-		_ = prevNext
-		for {
-			select {
-			case now := <-tick.C:
-				c := complete.Load()
-				n := next.Load()
-				queue := complete.Load() - d.last.Load()
-				rateC := float64(c-prevComplete) / now.Sub(last).Seconds()
-				fmt.Printf("complete: %.2f/s\tqueue: %d\t\n", rateC, queue)
-				prevComplete = c
-				prevNext = n
-				last = now
-			case <-ctx.Done():
-				return
+	if *syncFiles {
+		go func() {
+			// No need for a WaitGroup here
+			tick := time.NewTicker(*syncInterval)
+			defer tick.Stop()
+			for {
+				select {
+				case <-tick.C:
+					syscall.Sync()
+				case <-ctx.Done():
+					return
+				}
 			}
-		}
-	}(&wg)
+		}()
+	}
+
+	// Print agent style disk stats
+	wg.Add(1)
+	go printAgentDiskLatencyStats(ctx, &wg, tmpdir, *diskStatInterval)
 
 	wg.Wait()
 	if err := os.RemoveAll(tmpdir); err != nil && !os.IsNotExist(err) {

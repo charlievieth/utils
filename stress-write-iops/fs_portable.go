@@ -40,7 +40,3 @@ func Fallocate(filename string, size int64) error {
 	}
 	return f.Close()
 }
-
-func DropCaches(sync, pagecache, dentsInodes bool) error {
-	return nil
-}
