@@ -21,108 +21,141 @@ func init() {
 	log.SetFlags(log.Lshortfile)
 }
 
-type State struct {
-	// TODO: this can take a Context
-	dirname  string
-	next     *atomic.Int64
-	complete *atomic.Int64
-	errors   *atomic.Int64
-	writeCh  chan struct{}
-	// cond     *sync.Cond
-}
+// type State struct {
+// 	// TODO: this can take a Context
+// 	dirname  string
+// 	next     *atomic.Int64
+// 	complete *atomic.Int64
+// 	errors   *atomic.Int64
+// 	writeCh  chan struct{}
+// }
 
 type Deleter struct {
-	// state    *State
 	ctx      context.Context
-	dirname  string
+	writeMu  *sync.RWMutex // locked when too many files are queued
 	complete *atomic.Int64 // # completed writes
 	last     *atomic.Int64 // last deleted write file
-	// writeCh  chan struct{}
+	dirname  string
 }
 
 func (d *Deleter) Run(wg *sync.WaitGroup, writeCh <-chan struct{}) {
 	tick := time.NewTicker(time.Millisecond * 10)
-	defer tick.Stop()
+	defer func() {
+		defer wg.Done()
+		tick.Stop()
+		// First pass at removing directory - will likely error
+		os.RemoveAll(d.dirname)
+	}()
 	done := d.ctx.Done()
 	d.last.Store(1) // 1 based
+
+	// TODO: use multiple deleters to keep up with writes
+	//
+	// // WARN: untested
+	ch := make(chan int64, 4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			for id := range ch {
+				err := os.Remove(d.dirname + "/tmp." + strconv.FormatInt(id, 10))
+				if err != nil {
+					log.Println("delete:", err)
+				}
+			}
+		}()
+	}
+	defer close(ch)
+
 	for {
 		select {
 		case <-writeCh:
 			n := d.complete.Load()
 			i := d.last.Load()
-			if n-i < 50 {
+			m := n - i // number to delete
+			if m < 50 {
 				break
 			}
+			unlock := false
+			if m >= 500_000 {
+				d.writeMu.Lock() // block writes
+				unlock = true
+				log.Println("WARN: pausing writes: delete queue too large:", m)
+			}
 			for ; i <= n; i++ {
-				err := os.Remove(d.dirname + "/tmp." + strconv.FormatInt(i, 10))
-				if err != nil {
-					log.Println("delete:", err)
-				}
+				ch <- i
+				// err := os.Remove(d.dirname + "/tmp." + strconv.FormatInt(i, 10))
+				// if err != nil {
+				// 	log.Println("delete:", err)
+				// }
 			}
 			d.last.Store(n + 1)
+			if unlock {
+				log.Println("WARN: resuming writes: delete queue drained")
+				d.writeMu.Unlock() // unblock writes
+			}
 		case <-done:
 			return
 		}
 	}
 }
 
-// func (d *Deleter) Run(wg *sync.WaitGroup) {
-// 	defer wg.Done()
-// 	tick := time.NewTicker(time.Millisecond)
-// 	defer tick.Stop()
-// 	done := d.ctx.Done()
-// 	d.last.Store(1) // 1 based
-// 	for range tick.C {
-// 		select {
-// 		case <-tick.C:
-// 			n := d.complete.Load()
-// 			for i := d.last.Load(); i <= n; i++ {
-// 				if err := os.Remove(d.dirname + "/tmp." + strconv.FormatInt(i, 10)); err != nil {
-// 					log.Println("delete:", err)
-// 				}
-// 			}
-// 			d.last.Store(n + 1)
-// 		case <-done:
-// 			return
-// 		}
-// 	}
-// }
-
 type Writer struct {
 	ctx       context.Context
-	dirname   string
-	data      []byte
 	next      *atomic.Int64
 	complete  *atomic.Int64
 	writeTime *atomic.Int64
 	writeCh   chan<- struct{}
+	writeMu   *sync.RWMutex // Locked when the delete queue is too large
+	data      []byte
+	dirname   string
+	syncFiles bool // optionally flush files to disk (SLOW!!!)
 }
 
 func (w *Writer) WriteFile() error {
+	w.writeMu.RLock()
+	defer w.writeMu.RUnlock()
 	name := w.dirname + "/tmp." + strconv.FormatInt(w.next.Add(1), 10)
 	t := time.Now()
-	err := os.WriteFile(name, w.data, 0644)
-	w.writeTime.Add(int64(time.Since(t)))
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	exit := func(err error) error {
+		f.Close()
+		os.Remove(name)
+		return err
+	}
+	if _, err := f.Write(w.data); err != nil {
+		return exit(err)
+	}
+	w.writeTime.Add(int64(time.Since(t))) // TODO: post-sync ???
+	if w.syncFiles {
+		if err := f.Sync(); err != nil {
+			return exit(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		return exit(err)
+	}
 	w.complete.Add(1)
 	select {
 	case w.writeCh <- struct{}{}:
 	default:
 	}
-	return err
+	return nil
 }
 
 func (w *Writer) Run(wg *sync.WaitGroup, interval time.Duration) {
 	defer wg.Done()
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
-	done := w.ctx.Done()
 	for {
 		select {
 		case <-tick.C:
 			if err := w.WriteFile(); err != nil {
 				log.Println("write:", err)
 			}
-		case <-done:
+		case <-w.ctx.Done():
 			return
 		}
 	}
@@ -194,6 +227,7 @@ func realMain() error {
 		dirname:  tmpdir,
 		complete: &complete,
 		last:     new(atomic.Int64),
+		writeMu:  new(sync.RWMutex),
 	}
 	wg.Add(1)
 	go d.Run(&wg, writeCh)
@@ -207,6 +241,8 @@ func realMain() error {
 			complete:  &complete,
 			writeCh:   writeCh,
 			writeTime: new(atomic.Int64),
+			writeMu:   d.writeMu,
+			syncFiles: true, // TOOD: this should be configurable
 		}
 		wg.Add(1)
 		go w.Run(&wg, *writeInterval)
@@ -220,7 +256,6 @@ func realMain() error {
 		var prevNext int64
 		var prevComplete int64
 		_ = prevNext
-		// fmt.Println("complete:\t next: ")
 		for {
 			select {
 			case now := <-tick.C:
@@ -239,6 +274,10 @@ func realMain() error {
 	}(&wg)
 
 	wg.Wait()
+	if err := os.RemoveAll(tmpdir); err != nil && !os.IsNotExist(err) {
+		log.Println("cleanup:", err)
+		return err
+	}
 	return nil
 }
 
