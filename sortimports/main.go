@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -8,10 +9,9 @@ import (
 	"go/parser"
 	"go/scanner"
 	"go/token"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
@@ -19,8 +19,10 @@ import (
 )
 
 var (
-	zeroDelim  = false
-	formatOnly = false
+	zeroDelim   = false
+	formatOnly  = false
+	listChanged = false
+	writeFile   = false // WARN: unused
 
 	options = &imports.Options{
 		Fragment:  true,
@@ -33,6 +35,7 @@ var (
 )
 
 func init() {
+	// TODO: make sure this works with our new logic
 	flag.StringVar(&imports.LocalPrefix, "local", "",
 		"put imports beginning with this string after 3rd-party packages; "+
 			"comma-separated list")
@@ -43,6 +46,14 @@ func init() {
 	flag.BoolVar(&zeroDelim, "0", false,
 		"expect NUL ('\\0') characters as separators, instead of newlines "+
 			"when reading files from STDIN")
+
+	// WARN: unused
+	flag.BoolVar(&writeFile, "w", false,
+		"write result to (source) file instead of stdout")
+
+	// WARN: do this
+	flag.BoolVar(&listChanged, "l", false,
+		"list files whose formatting differs from goimport's")
 }
 
 func report(err error) {
@@ -72,11 +83,13 @@ func unquote(s string) string {
 func processFile(filename string) error {
 	fset := token.NewFileSet()
 
-	fi, err := os.Lstat(filename)
+	fi, err := os.Stat(filename)
 	if err != nil {
 		return err
 	}
-	src, err := ioutil.ReadFile(filename)
+	mode := fi.Mode() & os.ModePerm
+
+	src, err := os.ReadFile(filename)
 	if err != nil {
 		return err
 	}
@@ -101,16 +114,14 @@ func processFile(filename string) error {
 	}
 
 	for _, block := range imps {
-		if len(block) == 1 && block[0].Path.Value == `"C"` {
+		if len(block) == 1 && unquote(block[0].Path.Value) == "C" {
 			continue
 		}
 		for _, m := range block {
 			if m.Name != nil {
-				path, _ := strconv.Unquote(m.Path.Value)
-				astutil.AddNamedImport(fset, af, m.Name.Name, path)
+				astutil.AddNamedImport(fset, af, m.Name.Name, unquote(m.Path.Value))
 			} else {
-				path, _ := strconv.Unquote(m.Path.Value)
-				astutil.AddImport(fset, af, path)
+				astutil.AddImport(fset, af, unquote(m.Path.Value))
 			}
 		}
 	}
@@ -120,7 +131,7 @@ func processFile(filename string) error {
 		return err
 	}
 	if !bytes.Equal(buf.Bytes(), src) {
-		if err := ioutil.WriteFile(filename, buf.Bytes(), fi.Mode()); err != nil {
+		if err := os.WriteFile(filename, buf.Bytes(), mode); err != nil {
 			return err
 		}
 	}
@@ -133,7 +144,7 @@ func processFile(filename string) error {
 		return nil
 	}
 
-	return ioutil.WriteFile(filename, res, fi.Mode())
+	return os.WriteFile(filename, res, mode)
 }
 
 func visitFile(path string, f os.FileInfo, err error) error {
@@ -151,26 +162,22 @@ func walkDir(path string) {
 }
 
 func readFilesFromStdin() ([]string, error) {
-	in, err := ioutil.ReadAll(os.Stdin)
-	if err != nil {
-		return nil, err
+	r := bufio.NewReader(os.Stdin)
+	delim := byte('\n')
+	if zeroDelim {
+		delim = 0
 	}
-	var delim byte
-	if !zeroDelim {
-		delim = '\n'
-	}
-
-	a := bytes.Split(in, []byte{delim})
-
-	paths := make([]string, 0, len(a))
-	for _, b := range a {
-		s := string(b)
-		if strings.TrimSpace(s) == "" {
-			continue
+	var paths []string
+	for {
+		s, err := r.ReadString(delim)
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			return paths, err
 		}
 		paths = append(paths, s)
 	}
-	return paths, nil
 }
 
 func realMain() {
@@ -189,7 +196,7 @@ func realMain() {
 		return
 	}
 
-	for _, path := range flag.Args() {
+	for _, path := range paths {
 		switch dir, err := os.Stat(path); {
 		case err != nil:
 			report(err)
@@ -202,6 +209,10 @@ func realMain() {
 		}
 	}
 }
+
+// func processFile2(filename string, in io.Reader, out io.Writer, argType argumentType) error {
+// 	return nil
+// }
 
 func main() {
 	realMain()
