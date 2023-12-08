@@ -1,3 +1,5 @@
+// Most of the code here is borrowed from golang.org/x/tools/cmd/goimports
+//
 // Copyright 2013 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -16,6 +18,7 @@ import (
 	"go/scanner"
 	"go/token"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -23,10 +26,14 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/imports"
 )
+
+// TODO: add an "-auto" flag for guessing the local import path
 
 var (
 	// main operation modes
@@ -35,6 +42,7 @@ var (
 	doDiff = flag.Bool("d", false, "display diffs instead of rewriting files")
 	srcdir = flag.String("srcdir", "", "choose imports as if source code is from `dir`. "+
 		"When operating on a single file, dir may instead be the complete file name.")
+	simplifyAST = flag.Bool("s", false, "simplify code (same as `gofmt -s`")
 
 	verbose bool // verbose logging
 
@@ -48,7 +56,7 @@ var (
 		Comments:  true,
 		Fragment:  true,
 	}
-	exitCode = 0
+	exitCode = int32(0)
 )
 
 func init() {
@@ -61,21 +69,20 @@ func init() {
 			"with the addition that imports are grouped into sections.")
 }
 
+func setExitCode(code int32) {
+	atomic.StoreInt32(&exitCode, code)
+}
+
+// TODO: print all errors on exit
 func report(err error) {
 	scanner.PrintError(os.Stderr, err)
-	exitCode = 2
+	setExitCode(2)
 }
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "usage: %s [flags] [path ...]\n", filepath.Base(os.Args[0]))
 	flag.PrintDefaults()
 	os.Exit(2)
-}
-
-func isGoFile(f os.FileInfo) bool {
-	// ignore non-Go files
-	name := f.Name()
-	return !f.IsDir() && !strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".go")
 }
 
 // argumentType is which mode goimports was invoked as.
@@ -334,25 +341,15 @@ func mergeSortedImports(filename string, src []byte) ([]byte, error) {
 		}
 	}
 
+	if *simplifyAST {
+		simplify(af)
+	}
+
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, af); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-func visitFile(path string, f os.FileInfo, err error) error {
-	if err == nil && isGoFile(f) {
-		err = processFile(path, nil, os.Stdout, multipleArg)
-	}
-	if err != nil {
-		report(err)
-	}
-	return nil
-}
-
-func walkDir(path string) {
-	filepath.Walk(path, visitFile)
 }
 
 func main() {
@@ -362,7 +359,7 @@ func main() {
 	// so that it can use defer and have them
 	// run before the exit.
 	gofmtMain()
-	os.Exit(exitCode)
+	os.Exit(int(atomic.LoadInt32(&exitCode)))
 }
 
 // parseFlags parses command line flags and returns the paths to process.
@@ -400,10 +397,6 @@ func gofmtMain() {
 		defer flush()
 		defer pprof.StopCPUProfile()
 	}
-	// doTrace is a conditionally compiled wrapper around runtime/trace. It is
-	// used to allow goimports to compile under gccgo, which does not support
-	// runtime/trace. See https://golang.org/issue/15544.
-	defer doTrace()()
 	if *memProfileRate > 0 {
 		runtime.MemProfileRate = *memProfileRate
 		bw, flush := bufferedFileWriter(*memProfile)
@@ -418,10 +411,11 @@ func gofmtMain() {
 
 	if verbose {
 		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+		imports.Debug = true
 	}
 	if options.TabWidth < 0 {
 		fmt.Fprintf(os.Stderr, "negative tabwidth %d\n", options.TabWidth)
-		exitCode = 2
+		setExitCode(2)
 		return
 	}
 
@@ -437,18 +431,74 @@ func gofmtMain() {
 		argType = multipleArg
 	}
 
+	// Quick check for a single file
+	if len(paths) == 1 && strings.HasSuffix(paths[0], ".go") && isFile(paths[0]) {
+		if err := processFile(paths[0], nil, os.Stdout, argType); err != nil {
+			report(err)
+		}
+		return
+	}
+
+	type request struct {
+		filename string
+		argType  argumentType
+	}
+
+	numWorkers := runtime.NumCPU()
+	switch {
+	case numWorkers < 1:
+		numWorkers = 4
+	case numWorkers >= 32:
+		numWorkers = 32
+	}
+	// Don't spin up more workers than we have arguments
+	if !hasDir(paths) && len(paths) < numWorkers {
+		numWorkers = len(paths)
+	}
+
+	ch := make(chan *request, numWorkers*4)
+
+	visitFile := func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			report(err)
+			return nil
+		}
+		name := d.Name()
+		if !d.IsDir() && !strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".go") {
+			ch <- &request{filename: path, argType: multipleArg}
+		}
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range ch {
+				if err := processFile(r.filename, nil, os.Stdout, r.argType); err != nil {
+					report(err)
+				}
+			}
+		}()
+	}
+
 	for _, path := range paths {
 		switch dir, err := os.Stat(path); {
 		case err != nil:
 			report(err)
 		case dir.IsDir():
-			walkDir(path)
+			// walkDir(path)
+			filepath.WalkDir(path, visitFile)
 		default:
-			if err := processFile(path, nil, os.Stdout, argType); err != nil {
-				report(err)
-			}
+			// if err := processFile(path, nil, os.Stdout, argType); err != nil {
+			// 	report(err)
+			// }
+			ch <- &request{filename: path, argType: argType}
 		}
 	}
+	close(ch)
+	wg.Wait()
 }
 
 func writeTempFile(dir, prefix string, data []byte) (string, error) {
@@ -533,4 +583,14 @@ func isFile(name string) bool {
 func isDir(name string) bool {
 	fi, err := os.Stat(name)
 	return err == nil && fi.IsDir()
+}
+
+// hasDir reports if one of paths is a directory and not a Go file
+func hasDir(paths []string) bool {
+	for _, path := range paths {
+		if !strings.HasSuffix(path, ".go") && isDir(path) {
+			return true
+		}
+	}
+	return false
 }
