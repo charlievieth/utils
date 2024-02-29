@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"unicode/utf8"
 )
 
@@ -43,11 +42,15 @@ func main() {
 		}
 	}
 
-	for _, arg := range flag.Args() {
-		for _, a := range strings.Split(arg, "") {
-			for _, r := range a {
-				fmt.Printf("%d: %q\n", utf8.RuneLen(r), r)
-			}
+	for i, arg := range flag.Args() {
+		if i > 0 {
+			fmt.Print("\n")
+		}
+		for _, r := range arg {
+			fmt.Printf("%d: %q\n", utf8.RuneLen(r), r)
+		}
+		if utf8.RuneCountInString(arg) > 0 {
+			fmt.Printf("%d: total\n", len(arg))
 		}
 	}
 }
