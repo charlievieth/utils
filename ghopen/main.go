@@ -40,18 +40,26 @@ func GitSHA(wd string) (string, error) {
 	return out, nil
 }
 
-func GitURL(wd string) (string, error) {
-	cmd := exec.Command("git", "config", "--get", "remote.origin.url")
+func GitConfig(wd, config string) (string, error) {
+	cmd := exec.Command("git", "config", "--get", config)
 	cmd.Dir = wd
 	b, err := cmd.CombinedOutput()
 	out := string(bytes.TrimSpace(b))
 	if err != nil {
 		if out == "" {
-			out = "no remote found"
+			out = "config not found"
 		}
-		return "", fmt.Errorf("git url: %s: %s", err, out)
+		return "", fmt.Errorf("git config --get %q: %s: %s", config, err, out)
 	}
 	return out, nil
+}
+
+func GitRemote(wd, branch string) (string, error) {
+	return GitConfig(wd, "branch."+branch+".remote")
+}
+
+func GitURL(wd, remote string) (string, error) {
+	return GitConfig(wd, "remote."+remote+".url")
 }
 
 // GitDir returns the directory containing the '.git' directory
@@ -156,18 +164,6 @@ func realMain() error {
 		if !file.Info.IsDir() {
 			wd = filepath.Dir(wd)
 		}
-		remote, err := GitURL(wd)
-		if err != nil {
-			return err
-		}
-		url, err := ConvertRemote(remote)
-		if err != nil {
-			return err
-		}
-		dir, err := GitDir(wd)
-		if err != nil {
-			return err
-		}
 		var branch string
 		if *forceMaster {
 			branch = "master"
@@ -180,6 +176,23 @@ func realMain() error {
 			if err != nil {
 				return err
 			}
+		}
+		// TODO: handle not being on a branch (detached HEAD stat)
+		remote, err := GitRemote(wd, branch)
+		if err != nil {
+			return err
+		}
+		remoteURL, err := GitURL(wd, remote)
+		if err != nil {
+			return err
+		}
+		url, err := ConvertRemote(remoteURL)
+		if err != nil {
+			return err
+		}
+		dir, err := GitDir(wd)
+		if err != nil {
+			return err
 		}
 		repoPath := TrimPathPrefix(file.Path, dir)
 		if file.Info.IsDir() {
