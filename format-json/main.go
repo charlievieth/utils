@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 )
 
-func formatFile(name, indent string, buf *bytes.Buffer) error {
+func formatFile(name, indent string, sortKeys bool, buf *bytes.Buffer) error {
 	f, err := os.Open(name)
 	if err != nil {
 		return err
@@ -40,16 +40,32 @@ func formatFile(name, indent string, buf *bytes.Buffer) error {
 	buf.Reset()
 	dec := json.NewDecoder(f)
 	for {
-		var m json.RawMessage
-		if err := dec.Decode(&m); err != nil {
-			if err == io.EOF {
-				err = nil
+		if sortKeys {
+			var v any
+			if err = dec.Decode(&v); err != nil {
+				if err == io.EOF {
+					err = nil
+				}
+				break // ok
 			}
-			break // ok
-		}
-		buf.Reset()
-		if err = json.Indent(buf, m, "", indent); err != nil {
-			break
+			data, err := json.MarshalIndent(v, "", indent)
+			if err != nil {
+				break
+			}
+			buf.Reset()
+			buf.Write(data) // TODO: semi-useless copy
+		} else {
+			var m json.RawMessage
+			if err = dec.Decode(&m); err != nil {
+				if err == io.EOF {
+					err = nil
+				}
+				break // ok
+			}
+			buf.Reset()
+			if err = json.Indent(buf, m, "", indent); err != nil {
+				break
+			}
 		}
 		buf.WriteByte('\n')
 		if _, err = buf.WriteTo(tmp); err != nil {
@@ -75,7 +91,7 @@ func formatFile(name, indent string, buf *bytes.Buffer) error {
 	return nil
 }
 
-func formatFiles(names []string, indent string) error {
+func formatFiles(names []string, indent string, sortKeys bool) error {
 	numCPU := runtime.NumCPU()
 	if n := len(names); n < numCPU {
 		numCPU = n
@@ -90,7 +106,7 @@ func formatFiles(names []string, indent string) error {
 			defer wg.Done()
 			var buf bytes.Buffer
 			for name := range in {
-				if err := formatFile(name, indent, &buf); err != nil {
+				if err := formatFile(name, indent, sortKeys, &buf); err != nil {
 					fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
 					atomic.AddInt64(errCount, 1)
 				}
@@ -111,15 +127,18 @@ func formatFiles(names []string, indent string) error {
 }
 
 var (
-	Indent  uint
-	UseTabs bool
-	Compact bool
+	Indent   uint
+	UseTabs  bool
+	SortKeys bool
+	Compact  bool
 )
 
 func parseFlags() {
 	const DefaultIndent = 4
 	flag.BoolVar(&UseTabs, "tabs", false, "Indent using tabs")
 	flag.BoolVar(&UseTabs, "t", false, "Indent using tabs (shorthand)")
+	flag.BoolVar(&SortKeys, "sort", false, "Sort keys")
+	flag.BoolVar(&SortKeys, "s", false, "Sort keys (shorthand)")
 	flag.UintVar(&Indent, "indent", DefaultIndent, "Indent this many spaces")
 	flag.UintVar(&Indent, "n", DefaultIndent, "Indent this many spaces (shorthand)")
 	flag.BoolVar(&Compact, "c", false, "Compact JSON")
@@ -137,7 +156,7 @@ func main() {
 	default:
 		delim = strings.Repeat(" ", int(Indent))
 	}
-	if err := formatFiles(flag.Args(), delim); err != nil {
+	if err := formatFiles(flag.Args(), delim, SortKeys); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
