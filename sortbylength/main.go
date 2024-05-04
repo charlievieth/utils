@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"cmp"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"text/tabwriter"
 	"time"
@@ -44,32 +46,17 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 		}
 		r.buf = append(r.buf, frag...)
 	}
+	if n := len(frag); n > 0 && frag[n-1] == delim {
+		frag = frag[:n-1]
+	}
 	r.buf = append(r.buf, frag...)
 	return r.buf, err
 }
 
-func isSpace(r byte) bool {
-	return r == '\n' || r == ' ' || r == '\t' || r == '\r'
-}
-
-func trimSpace(s []byte) []byte {
-	i := 0
-	for ; i < len(s) && isSpace(s[i]); i++ {
-	}
-	s = s[i:]
-	i = len(s) - 1
-	for ; i >= 0 && isSpace(s[i]); i-- {
-	}
-	return s[:i+1]
-}
-
-var printTime bool
-
-func init() {
-	flag.BoolVar(&printTime, "time", false, "print runtime")
-}
-
 func main() {
+	printTime := flag.Bool("time", false, "print runtime")
+	printLength := flag.Bool("length", false, "print the length of each line")
+	trim := flag.Bool("trim", false, "trim leading and trailing whitespace")
 	flag.Parse()
 	startTime := time.Now()
 
@@ -78,10 +65,14 @@ func main() {
 		buf: make([]byte, 128),
 	}
 	lines := make([]string, 0, 128)
+	doTrim := *trim
 	var err error
 	for err == nil {
 		b, e := in.ReadBytes('\n')
-		if b = trimSpace(b); len(b) != 0 {
+		if doTrim {
+			b = bytes.TrimSpace(b)
+		}
+		if len(b) != 0 {
 			lines = append(lines, string(b))
 		}
 		if e != nil {
@@ -97,24 +88,44 @@ func main() {
 
 	sortTime := time.Now()
 
-	sort.Strings(lines)
-	sort.Stable(byLen(lines))
+	slices.SortFunc(lines, func(s1, s2 string) int {
+		n1 := len(s1)
+		n2 := len(s2)
+		if n1 < n2 {
+			return -1
+		}
+		if n1 > n2 {
+			return 1
+		}
+		return cmp.Compare(s1, s2)
+	})
 
 	writeTime := time.Now()
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-	b := make([]byte, 0, 128)
-	for _, s := range lines {
-		b = strconv.AppendInt(b[:0], int64(len(s)), 10)
-		b = append(b, ' ')
-		b = append(b, s...)
-		b = append(b, '\n')
-		if _, err := w.Write(b); err != nil {
+	if *printLength {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+		b := make([]byte, 0, 128)
+		for _, s := range lines {
+			b = strconv.AppendInt(b[:0], int64(len(s)), 10)
+			b = append(b, ' ')
+			b = append(b, s...)
+			b = append(b, '\n')
+			if _, err := w.Write(b); err != nil {
+				Fatalf("write: %s\n", err)
+			}
+		}
+	} else {
+		w := bufio.NewWriter(os.Stdout)
+		for _, s := range lines {
+			w.WriteString(s)
+			w.WriteByte('\n')
+		}
+		if err := w.Flush(); err != nil {
 			Fatalf("write: %s\n", err)
 		}
 	}
 
-	if printTime {
+	if *printTime {
 		end := time.Now()
 		fmt.Fprint(os.Stderr, "\n")
 		fmt.Fprintf(os.Stderr, "read\t%s\n", sortTime.Sub(startTime))
