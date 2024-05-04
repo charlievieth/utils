@@ -64,35 +64,55 @@ func main() {
 		Fatalf("cannot specify both the '-stable' and '-comp' flags")
 	}
 
-	startTime := time.Now()
-
 	in := Reader{
-		b:   bufio.NewReader(os.Stdin),
+		b:   bufio.NewReaderSize(os.Stdin, 256*1024),
 		buf: make([]byte, 128),
 	}
 	lines := make([]string, 0, 128)
+
+	files := flag.Args()
+	if len(files) == 0 {
+		files = append(files, "-")
+	}
+
+	startTime := time.Now()
 	doTrim := *trim
 	var err error
-	for err == nil {
-		b, e := in.ReadBytes('\n')
-		if doTrim {
-			b = bytes.TrimSpace(b)
-		}
-		if len(b) != 0 {
-			lines = append(lines, string(b))
-		}
-		if e != nil {
-			if e != io.EOF {
-				err = e
+	for _, name := range files {
+		var f *os.File
+		if name == "-" {
+			f = os.Stdin
+		} else {
+			f, err = os.Open(name)
+			if err != nil {
+				Fatalf("%s: %s\n", name, err)
 			}
-			break
+		}
+		in.b.Reset(f)
+		for {
+			b, e := in.ReadBytes('\n')
+			if doTrim {
+				b = bytes.TrimSpace(b)
+			}
+			if len(b) != 0 {
+				lines = append(lines, string(b))
+			}
+			if e != nil {
+				if e != io.EOF {
+					err = e
+				}
+				break
+			}
+		}
+		if f != os.Stdin {
+			f.Close()
+		}
+		if err != nil {
+			Fatalf("reading %s: %s\n", err)
 		}
 	}
-	if err != nil {
-		Fatalf("reading stdin: %s\n", err)
-	}
-	sortTime := time.Now()
 
+	sortTime := time.Now()
 	switch {
 	case *stableSort:
 		slices.SortStableFunc(lines, func(s1, s2 string) int {
@@ -113,7 +133,6 @@ func main() {
 	}
 
 	writeTime := time.Now()
-
 	if len(lines) > 0 {
 		if *printLength {
 			n := len(strconv.Itoa(len(lines[len(lines)-1])))
