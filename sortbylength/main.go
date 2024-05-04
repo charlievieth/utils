@@ -10,7 +10,6 @@ import (
 	"os"
 	"slices"
 	"strconv"
-	"text/tabwriter"
 	"time"
 )
 
@@ -54,10 +53,17 @@ func (r *Reader) ReadBytes(delim byte) ([]byte, error) {
 }
 
 func main() {
+	stableSort := flag.Bool("stable", false, "use a stable sort")
+	sortStrings := flag.Bool("comp", false, "sort by length and tie-break on string")
 	printTime := flag.Bool("time", false, "print runtime")
 	printLength := flag.Bool("length", false, "print the length of each line")
 	trim := flag.Bool("trim", false, "trim leading and trailing whitespace")
 	flag.Parse()
+
+	if *stableSort && *sortStrings {
+		Fatalf("cannot specify both the '-stable' and '-comp' flags")
+	}
+
 	startTime := time.Now()
 
 	in := Reader{
@@ -85,43 +91,50 @@ func main() {
 	if err != nil {
 		Fatalf("reading stdin: %s\n", err)
 	}
-
 	sortTime := time.Now()
 
-	slices.SortFunc(lines, func(s1, s2 string) int {
-		n1 := len(s1)
-		n2 := len(s2)
-		if n1 < n2 {
-			return -1
-		}
-		if n1 > n2 {
-			return 1
-		}
-		return cmp.Compare(s1, s2)
-	})
+	switch {
+	case *stableSort:
+		slices.SortStableFunc(lines, func(s1, s2 string) int {
+			return len(s1) - len(s2)
+		})
+	case *sortStrings:
+		slices.SortFunc(lines, func(s1, s2 string) int {
+			n := len(s1) - len(s2)
+			if n != 0 {
+				return n
+			}
+			return cmp.Compare(s1, s2)
+		})
+	default:
+		slices.SortFunc(lines, func(s1, s2 string) int {
+			return len(s1) - len(s2)
+		})
+	}
 
 	writeTime := time.Now()
 
-	if *printLength {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-		b := make([]byte, 0, 128)
-		for _, s := range lines {
-			b = strconv.AppendInt(b[:0], int64(len(s)), 10)
-			b = append(b, ' ')
-			b = append(b, s...)
-			b = append(b, '\n')
-			if _, err := w.Write(b); err != nil {
+	if len(lines) > 0 {
+		if *printLength {
+			n := len(strconv.Itoa(len(lines[len(lines)-1])))
+			n++
+			if n < 4 {
+				n = n
+			}
+			for _, s := range lines {
+				if _, err := fmt.Printf("%*d  %s\n", n, len(s), s); err != nil {
+					Fatalf("write: %v\n", err)
+				}
+			}
+		} else {
+			w := bufio.NewWriter(os.Stdout)
+			for _, s := range lines {
+				w.WriteString(s)
+				w.WriteByte('\n')
+			}
+			if err := w.Flush(); err != nil {
 				Fatalf("write: %s\n", err)
 			}
-		}
-	} else {
-		w := bufio.NewWriter(os.Stdout)
-		for _, s := range lines {
-			w.WriteString(s)
-			w.WriteByte('\n')
-		}
-		if err := w.Flush(); err != nil {
-			Fatalf("write: %s\n", err)
 		}
 	}
 
