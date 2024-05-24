@@ -111,7 +111,7 @@ func main() {
 		delim = 0
 	}
 	var err error
-	if flag.NArg() == 0 {
+	if flag.NArg() == 0 || flag.Arg(0) == "-" {
 		err = parseStdin(delim)
 	} else {
 		err = parseFiles(delim, flag.Args()...)
