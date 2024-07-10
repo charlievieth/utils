@@ -69,6 +69,10 @@ gobasename:
 godirname:
 	@cd ./pathutils/cmd/godirname && go install
 
+.PHONY: gocalc
+gocalc:
+	@cd ./gocalc && go install
+
 .PHONY: pathutils
 pathutils: extname gobasename godirname
 
@@ -83,4 +87,4 @@ jq-completion:
 # Install frequently used utilities
 all: escape-regex format-json frequency ghopen godu gouniq gowd \
 	isbinary linecount subl-completion timestamp pathutils \
-	watchman-completion rgsort jq-completion
+	watchman-completion rgsort jq-completion gocalc
