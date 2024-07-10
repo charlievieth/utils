@@ -1,14 +1,14 @@
 module github.com/charlievieth/utils/gocalc
 
-go 1.18
+go 1.22
 
 require (
-	github.com/spf13/cobra v1.4.0
+	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
-	golang.org/x/term v0.0.0-20220526004731-065cf7ba2467
+	golang.org/x/term v0.22.0
 )
 
 require (
-	github.com/inconshreveable/mousetrap v1.0.0 // indirect
-	golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	golang.org/x/sys v0.22.0 // indirect
 )
