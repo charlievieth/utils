@@ -130,6 +130,8 @@ type Stats struct {
 	Sum         *big.Float    `json:"sum"`
 	Average     *big.Float    `json:"average"`
 	Median      *big.Float    `json:"median,omitempty"`
+	Min         *big.Float    `json:"min,omitempty"`
+	Max         *big.Float    `json:"max,omitempty"`
 	Percentiles []*Percentile `json:"percentiles,omitempty"`
 }
 
@@ -146,6 +148,8 @@ func newStats(count int64, sum *big.Float, all []*big.Float, percentiles []float
 			return all[i].Cmp(all[j]) == -1
 		})
 		stats.Median = all[len(all)/2]
+		stats.Min = all[0]
+		stats.Max = all[len(all)-1]
 	}
 
 	percentiles = uniqueFloats(percentiles)
@@ -180,6 +184,12 @@ func (s *Stats) WriteTo(wr io.Writer) (int64, error) {
 	fmt.Fprintf(w, "  average:\t%.*f\n", fmtPrecision(s.Average), s.Average)
 	if s.Median != nil {
 		fmt.Fprintf(w, "  median:\t%.*f\n", fmtPrecision(s.Median), s.Median)
+	}
+	if s.Min != nil {
+		fmt.Fprintf(w, "  min:\t%.*f\n", fmtPrecision(s.Min), s.Min)
+	}
+	if s.Max != nil {
+		fmt.Fprintf(w, "  max:\t%.*f\n", fmtPrecision(s.Max), s.Max)
 	}
 	w.Flush()
 
