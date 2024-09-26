@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"text/tabwriter"
@@ -20,8 +22,23 @@ func main() {
 	}
 	flag.Parse()
 
+	args := flag.Args()
+	if len(args) == 0 {
+		r := bufio.NewReader(os.Stdin)
+		for {
+			s, err := r.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					fmt.Fprintln(os.Stderr, "error:", err)
+					os.Exit(1)
+				}
+				break
+			}
+			args = append(args, s)
+		}
+	}
 	tw := tabwriter.NewWriter(os.Stdout, 1, 4, 2, ' ', 0)
-	for i, s := range flag.Args() {
+	for i, s := range args {
 		if i > 0 && utf8.RuneCountInString(s) > 1 {
 			fmt.Fprint(tw, "\n")
 		}
