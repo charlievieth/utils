@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 )
 
 type parseValueTest struct {
@@ -48,9 +49,17 @@ var parseValueTests = []parseValueTest{
 	{"1a", big.NewFloat(0), &SuffixError{Suffix: "a"}},
 }
 
+var parseValueDurationTests = []parseValueTest{
+	{"0", big.NewFloat(0), nil},
+	{"1ns", big.NewFloat(1), nil},
+	{"1µs", big.NewFloat(float64(time.Microsecond)), nil},
+	{"2ms", big.NewFloat(float64(time.Millisecond * 2)), nil},
+}
+
 func TestParseValue(t *testing.T) {
-	for _, test := range parseValueTests {
-		got, err := ParseValue(test.in, true)
+	fn := func(t *testing.T, test parseValueTest, useSuffix, parseDuration bool) {
+		t.Helper()
+		got, err := ParseValue(test.in, useSuffix, parseDuration)
 		if got == nil {
 			got = new(big.Float)
 		}
@@ -58,6 +67,12 @@ func TestParseValue(t *testing.T) {
 			t.Errorf("ParseValue(%q, %t) = %f, %v; want: %f, %v",
 				test.in, true, got, err, test.want, test.err)
 		}
+	}
+	for _, test := range parseValueTests {
+		fn(t, test, true, false)
+	}
+	for _, test := range parseValueDurationTests {
+		fn(t, test, false, true)
 	}
 }
 

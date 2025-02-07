@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -100,7 +101,15 @@ func Suffix(s string) (val string, mult uint64, err error) {
 	return val, mult, err
 }
 
-func ParseValue(val string, useSuffix bool) (*big.Float, error) {
+func ParseValue(val string, useSuffix, parseDuration bool) (*big.Float, error) {
+	if parseDuration {
+		d, err := time.ParseDuration(val)
+		if err != nil {
+			return nil, err
+		}
+		var f big.Float
+		return f.SetInt64(int64(d)), nil
+	}
 	mult := uint64(1)
 	if useSuffix {
 		var err error
@@ -126,13 +135,14 @@ type Percentile struct {
 }
 
 type Stats struct {
-	Count       int64         `json:"count"`
-	Sum         *big.Float    `json:"sum"`
-	Average     *big.Float    `json:"average"`
-	Median      *big.Float    `json:"median,omitempty"`
-	Min         *big.Float    `json:"min,omitempty"`
-	Max         *big.Float    `json:"max,omitempty"`
-	Percentiles []*Percentile `json:"percentiles,omitempty"`
+	PrintDuration bool          `json:"-"`
+	Count         int64         `json:"count"`
+	Sum           *big.Float    `json:"sum"`
+	Average       *big.Float    `json:"average"`
+	Median        *big.Float    `json:"median,omitempty"`
+	Min           *big.Float    `json:"min,omitempty"`
+	Max           *big.Float    `json:"max,omitempty"`
+	Percentiles   []*Percentile `json:"percentiles,omitempty"`
 }
 
 func newStats(count int64, sum *big.Float, all []*big.Float, percentiles []float64) *Stats {
@@ -167,11 +177,20 @@ func newStats(count int64, sum *big.Float, all []*big.Float, percentiles []float
 	return stats
 }
 
-func fmtPrecision(f *big.Float) int {
-	if f.IsInt() {
-		return 0
+func (s *Stats) formatValue(f *big.Float) string {
+	if s.PrintDuration {
+		i, _ := f.Int64()
+		switch i {
+		case math.MaxInt64, math.MinInt64:
+			// Return the number of seconds on {over,under}flow
+			return f.Text('f', 2) + "s"
+		}
+		return time.Duration(i).String()
 	}
-	return 2
+	if f.IsInt() {
+		return f.Text('f', 0)
+	}
+	return f.Text('f', 2)
 }
 
 func (s *Stats) WriteTo(wr io.Writer) (int64, error) {
@@ -180,16 +199,16 @@ func (s *Stats) WriteTo(wr io.Writer) (int64, error) {
 	w := tabwriter.NewWriter(&buf, 1, 4, 2, ' ', 0)
 	buf.WriteString("\nStats:\n")
 	fmt.Fprintf(w, "  count:\t%d\n", s.Count)
-	fmt.Fprintf(w, "  sum:\t%.*f\n", fmtPrecision(s.Sum), s.Sum)
-	fmt.Fprintf(w, "  average:\t%.*f\n", fmtPrecision(s.Average), s.Average)
+	fmt.Fprintf(w, "  sum:\t%s\n", s.formatValue(s.Sum))
+	fmt.Fprintf(w, "  average:\t%s\n", s.formatValue(s.Average))
 	if s.Median != nil {
-		fmt.Fprintf(w, "  median:\t%.*f\n", fmtPrecision(s.Median), s.Median)
+		fmt.Fprintf(w, "  median:\t%s\n", s.formatValue(s.Median))
 	}
 	if s.Min != nil {
-		fmt.Fprintf(w, "  min:\t%.*f\n", fmtPrecision(s.Min), s.Min)
+		fmt.Fprintf(w, "  min:\t%s\n", s.formatValue(s.Min))
 	}
 	if s.Max != nil {
-		fmt.Fprintf(w, "  max:\t%.*f\n", fmtPrecision(s.Max), s.Max)
+		fmt.Fprintf(w, "  max:\t%s\n", s.formatValue(s.Max))
 	}
 	w.Flush()
 
@@ -197,10 +216,11 @@ func (s *Stats) WriteTo(wr io.Writer) (int64, error) {
 		w = w.Init(&buf, 1, 4, 2, ' ', 0)
 		buf.WriteString("\nPercentiles:\n")
 		for _, p := range s.Percentiles {
-			fmt.Fprintf(w, "  %.0f:\t%.*f\n", p.P, fmtPrecision(p.Value), p.Value)
+			fmt.Fprintf(w, "  %.0f:\t%s\n", p.P, s.formatValue(p.Value))
 		}
 		w.Flush()
 	}
+
 	return buf.WriteTo(wr)
 }
 
@@ -226,6 +246,7 @@ type Config struct {
 	P90            bool
 	P95            bool
 	Human          bool
+	Duration       bool
 	JSON           bool
 	JSONIndent     int
 }
@@ -262,6 +283,8 @@ func (c *Config) AddFlags(flags *pflag.FlagSet) {
 		fmt.Sprintf("calculate P%[1]d (shorthand for --p%[1]d", 95))
 	flags.BoolVarP(&c.Human, "human", "u", c.Human,
 		"translate human readable sizes print sizes (e.g., 1K 234M 2G)")
+	flags.BoolVarP(&c.Duration, "duration", "d", c.Duration,
+		"translate values as time durations (e.g., 1m11.22s, 31µs)")
 
 	flags.BoolVar(&c.JSON, "json", c.JSON, "JSON output")
 	flags.IntVar(&c.JSONIndent, "json-indent", c.JSONIndent, "indent JSON output")
@@ -278,6 +301,7 @@ func (c *Config) Process(rd io.Reader) (*Result, error) {
 	var count int64
 	sum := new(big.Float).SetPrec(Precision)
 	human := c.Human
+	duration := c.Duration
 	parseErrors := 0
 	needAll := c.Median || len(c.GetPercentiles()) != 0
 
@@ -287,7 +311,7 @@ func (c *Config) Process(rd io.Reader) (*Result, error) {
 		s, e := r.ReadString('\n')
 		s = strings.TrimSpace(s)
 		if len(s) > 0 {
-			f, perr := ParseValue(s, human)
+			f, perr := ParseValue(s, human, duration)
 			if perr != nil {
 				fmt.Fprintln(os.Stderr, "Error:", perr)
 				parseErrors++
@@ -405,6 +429,8 @@ $ gocalc --completion [bash|zsh|fish|powershell]`[1:],
 		}
 
 		stats := newStats(int64(count), sum, all, conf.GetPercentiles())
+		// TODO: This is kind of ugly
+		stats.PrintDuration = conf.Duration
 
 		if conf.JSON {
 			enc := json.NewEncoder(os.Stdout)
