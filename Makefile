@@ -1,3 +1,6 @@
+MAKEFILE_PATH := $(realpath $(lastword $(MAKEFILE_LIST)))
+MAKEFILE_DIR  := $(abspath $(dir $(MAKEFILE_PATH)))
+
 .PHONY: escape-regex
 escape-regex:
 	@cd ./escape-regex && go install
@@ -83,6 +86,11 @@ rgsort:
 .PHONY: jq-completion
 jq-completion:
 	@cd ./jq-completion && go install
+
+.PHONY: sync-hetzner
+sync-hetzner:
+	@cd $(MAKEFILE_DIR) && \
+		rsync -avz . hetzner-big:go/src/github.com/charlievieth/utils
 
 # Install frequently used utilities
 all: escape-regex format-json frequency ghopen godu gouniq gowd \
