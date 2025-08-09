@@ -1,5 +1,5 @@
-github.com/charlievieth/fastwalk v1.0.10 h1:0qUbvA2O+K+X+IrTfZTC0UH2DK5MOA+KjVfStAHUnGg=
-github.com/charlievieth/fastwalk v1.0.10/go.mod h1:yGy1zbxog41ZVMcKA/i8ojXLFsuayX5VvwhQVoj9PBI=
+github.com/charlievieth/fastwalk v1.0.12 h1:pwfxe1LajixViQqo7EFLXU2+mQxb6OaO0CeNdVwRKTg=
+github.com/charlievieth/fastwalk v1.0.12/go.mod h1:yGy1zbxog41ZVMcKA/i8ojXLFsuayX5VvwhQVoj9PBI=
 github.com/charlievieth/num v0.0.0-20211011220440-458eb276ef61 h1:Ub2w72wRBdSCyBJ9Ag4Ob5eR5jM28Z4uPrw/2eNTUX8=
 github.com/charlievieth/num v0.0.0-20211011220440-458eb276ef61/go.mod h1:/U5vOa/7xt7tVVy+7jKsm2BtyQkavBoycSjwyoU90js=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
