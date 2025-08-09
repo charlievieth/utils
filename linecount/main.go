@@ -88,8 +88,8 @@ func wellKnownFilename(s string) bool {
 
 func ignoredExtension(ext string) bool {
 	switch ext {
-	case ".bz", ".bzip", ".exe", ".gz", ".gzip", ".tar", ".tbz", ".tgz",
-		".vdi", ".xz", ".zip", ".zst":
+	case ".a", ".bz", ".bzip", ".exe", ".gz", ".gzip", ".la", ".so", ".tar",
+		".tbz", ".tgz", ".vdi", ".xz", ".zip", ".zst":
 		return true
 	}
 	return false
