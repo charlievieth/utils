@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -207,7 +208,7 @@ CREATE TABLE IF NOT EXISTS weather(
 );
 `
 
-func InsertRow(ctx context.Context, db *pgx.Conn, d *FormData) error {
+func InsertRow(ctx context.Context, db *pgxpool.Pool, d *FormData) error {
 	const (
 		selectPassKeyStmt = `SELECT id FROM weather_passkeys WHERE key = $1;`
 		insertPassKeyStmt = `INSERT INTO weather_passkeys(key) VALUES ($1) RETURNING id;`
@@ -215,12 +216,12 @@ func InsertRow(ctx context.Context, db *pgx.Conn, d *FormData) error {
 	var passkey int64
 	if err := db.QueryRow(ctx, selectPassKeyStmt, d.PassKey).Scan(&passkey); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
-			panic("HERE 1")
+			// panic("HERE 1")
 			return err
 		}
 		// Add row
 		if err := db.QueryRow(ctx, insertPassKeyStmt, d.PassKey).Scan(&passkey); err != nil {
-			panic("HERE 2")
+			// panic("HERE 2")
 			return err
 		}
 	}
@@ -534,6 +535,8 @@ func Handler(fn func(w http.ResponseWriter, r *http.Request) error) http.Handler
 	})
 }
 
+var globalConn *pgxpool.Pool
+
 // TODO: use [http.MaxBytesReader]
 func HandleEcowittPost(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodPost {
@@ -560,10 +563,7 @@ func HandleEcowittPost(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-var globalConn *pgx.Conn
-
 func realMain(log *zap.Logger) error {
-	// if _, err := conn.Exec(ctx, createTableStmt); err != nil {
 	envOr := func(key, def string) string {
 		if s := os.Getenv(key); s != "" {
 			return s
@@ -585,28 +585,46 @@ func realMain(log *zap.Logger) error {
 		cancel()
 	}()
 
-	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://%s:%s@localhost:5432/%s",
+	pool, err := pgxpool.New(ctx, fmt.Sprintf("postgres://%s:%s@localhost:5432/%s",
 		*dbUser, *dbPass, *dbName))
 	if err != nil {
 		return err
 	}
-	defer conn.Close(ctx)
+	defer pool.Close()
+	pool.Config()
+	_ = pool
 
 	ping := func(parent context.Context) error {
 		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 		defer cancel()
-		return conn.Ping(ctx)
+		return pool.Ping(ctx)
 	}
 	if err := ping(ctx); err != nil {
 		log.Error("ping failed", zap.Error(err))
 		return err
 	}
-	globalConn = conn
+	globalConn = pool
 
-	if _, err := conn.Exec(ctx, createTableStmt); err != nil {
+	if _, err := pool.Exec(ctx, createTableStmt); err != nil {
 		log.Error("failed to created tables", zap.Error(err))
 		return err
 	}
+
+	opts := prometheus.GaugeOpts{
+		Namespace: Namespace,
+		Name:      "db_rows",
+	}
+	promauto.NewGaugeFunc(opts, func() float64 {
+		var rows int64
+		ctx, cancel := context.WithTimeout(ctx, time.Second*2)
+		defer cancel()
+		err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM weather;`).Scan(&rows)
+		if err != nil {
+			log.Error("db_rows", zap.Error(err))
+			rows = 0
+		}
+		return float64(rows)
+	})
 
 	srv := NewServer(ctx, *addr, Routes())
 	go func() {
