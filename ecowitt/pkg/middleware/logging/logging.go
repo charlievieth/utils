@@ -24,22 +24,25 @@ func NewMiddleware(log *zap.Logger, next http.Handler) http.Handler {
 	return &Middleware{log: log, next: next}
 }
 
-func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log := m.log.With(
+func newRequestLogger(log *zap.Logger, r *http.Request) *zap.Logger {
+	return log.With(
 		zap.Uint64("id", rand.Uint64()),
 		zap.String("url", path.Join(r.URL.Host, r.URL.Path)),
 		zap.String("method", r.Method),
 	)
-	m.next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxLogKey, log)))
+}
+
+func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := context.WithValue(r.Context(), ctxLogKey, newRequestLogger(m.log, r))
+	m.next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 func GetLogger(r *http.Request) (log *zap.Logger) {
 	if v := r.Context().Value(ctxLogKey); v != nil {
 		log = v.(*zap.Logger)
 	} else {
-		log = zap.L()
+		log = newRequestLogger(zap.L(), r)
 	}
-
 	return log
 }
 

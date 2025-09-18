@@ -2,12 +2,9 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,13 +17,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charlievieth/utils/ecowitt/pkg/middleware/logging"
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/spf13/pflag"
 	"go.uber.org/zap"
 	"golang.org/x/term"
+
+	"github.com/charlievieth/utils/ecowitt/pkg/middleware/logging"
 )
 
 // WARN: make sure we like this namespace
@@ -73,7 +73,8 @@ func init() {
 
 type Config struct {
 	PassKeys map[string]bool // Use this for validation
-	Log      *zap.Logger
+	conn     *pgx.Conn
+	log      *zap.Logger
 }
 
 type GaugeSetter struct {
@@ -143,10 +144,44 @@ func UpdateMetrics(d *FormData) error {
 	return nil
 }
 
-// WARN: need to also persist this to sqlite3
+// // WARN: need to also persist this to sqlite3
+// const createTableStmt = `
+// CREATE TABLE IF NOT EXISTS nyc_weather(
+// 	created_at          INTEGER PRIMARY KEY,
+// 	outdoor_humidity    REAL NOT NULL,
+// 	outdoor_temperature REAL NOT NULL,
+// 	indoor_humidity     REAL NOT NULL,
+// 	indoor_temperature  REAL NOT NULL,
+// 	solar_irradiance    REAL NOT NULL,
+// 	solar_uvi           INTEGER NOT NULL,
+// 	rainfall_daily      REAL NOT NULL,
+// 	rainfall_event      REAL NOT NULL,
+// 	rainfall_hourly     REAL NOT NULL,
+// 	rainfall_monthly    REAL NOT NULL,
+// 	rainfall_rate       REAL NOT NULL,
+// 	rainfall_state      INTEGER NOT NULL,
+// 	rainfall_weekly     REAL NOT NULL,
+// 	rainfall_yearly     REAL NOT NULL,
+// 	wind_direction      REAL NOT NULL,
+// 	wind_gust           REAL NOT NULL,
+// 	wind_speed          REAL NOT NULL,
+// 	wind_max_daily_gust REAL NOT NULL,
+// 	pressure_absolute   REAL NOT NULL,
+// 	pressure_relative   REAL NOT NULL,
+// 	battery_voltage     REAL NOT NULL,
+// 	capacitor_voltage   REAL NOT NULLL
+// ) WITHOUT ROWID;`
+
 const createTableStmt = `
-CREATE TABLE IF NOT EXISTS nyc_weather(
-	created_at          INTEGER PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS weather_passkeys(
+	id  SERIAL PRIMARY KEY,
+	key CHARACTER(32) UNIQUE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS weather(
+	id                  BIGSERIAL PRIMARY KEY,
+	created_at          TIMESTAMP WITH TIME ZONE NOT NULL,
+	passkey             INTEGER NOT NULL references weather_passkeys(id),
 	outdoor_humidity    REAL NOT NULL,
 	outdoor_temperature REAL NOT NULL,
 	indoor_humidity     REAL NOT NULL,
@@ -168,13 +203,31 @@ CREATE TABLE IF NOT EXISTS nyc_weather(
 	pressure_absolute   REAL NOT NULL,
 	pressure_relative   REAL NOT NULL,
 	battery_voltage     REAL NOT NULL,
-	capacitor_voltage   REAL NOT NULLL
-) WITHOUT ROWID;`
+	capacitor_voltage   REAL NOT NULL
+);
+`
 
-func InsertRow(ctx context.Context, db *sql.DB, d *FormData) error {
+func InsertRow(ctx context.Context, db *pgx.Conn, d *FormData) error {
+	const (
+		selectPassKeyStmt = `SELECT id FROM weather_passkeys WHERE key = $1;`
+		insertPassKeyStmt = `INSERT INTO weather_passkeys(key) VALUES ($1) RETURNING id;`
+	)
+	var passkey int64
+	if err := db.QueryRow(ctx, selectPassKeyStmt, d.PassKey).Scan(&passkey); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			panic("HERE 1")
+			return err
+		}
+		// Add row
+		if err := db.QueryRow(ctx, insertPassKeyStmt, d.PassKey).Scan(&passkey); err != nil {
+			panic("HERE 2")
+			return err
+		}
+	}
 	const stmt = `
-	INSERT INTO nyc_weather(
+	INSERT INTO weather(
 		created_at,
+		passkey,
 		outdoor_humidity,
 		outdoor_temperature,
 		indoor_humidity,
@@ -197,9 +250,17 @@ func InsertRow(ctx context.Context, db *sql.DB, d *FormData) error {
 		pressure_relative,
 		battery_voltage,
 		capacitor_voltage
-	) VALUES (? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?);`
-	db.ExecContext(ctx, stmt,
-		time.Now().Unix(),
+	) VALUES (
+		$1, $2, $3, $4,
+		$5, $6, $7, $8,
+		$9, $10, $11, $12,
+		$13, $14, $15, $16,
+		$17, $18, $19, $20,
+		$21, $22, $23, $24
+	);`
+	_, err := db.Exec(ctx, stmt,
+		time.Now(),
+		passkey,
 		d.OutdoorHumidity,
 		d.OutdoorTemperature,
 		d.IndoorHumidity,
@@ -223,8 +284,63 @@ func InsertRow(ctx context.Context, db *sql.DB, d *FormData) error {
 		d.BatteryVoltage,
 		d.CapacitorVoltage,
 	)
-	return nil
+	return err
 }
+
+// func InsertRow(ctx context.Context, db *sql.DB, d *FormData) error {
+// 	const stmt = `
+// 	INSERT INTO nyc_weather(
+// 		created_at,
+// 		outdoor_humidity,
+// 		outdoor_temperature,
+// 		indoor_humidity,
+// 		indoor_temperature,
+// 		solar_irradiance,
+// 		solar_uvi,
+// 		rainfall_daily,
+// 		rainfall_event,
+// 		rainfall_hourly,
+// 		rainfall_monthly,
+// 		rainfall_rate,
+// 		rainfall_state,
+// 		rainfall_weekly,
+// 		rainfall_yearly,
+// 		wind_direction,
+// 		wind_gust,
+// 		wind_speed,
+// 		wind_max_daily_gust,
+// 		pressure_absolute,
+// 		pressure_relative,
+// 		battery_voltage,
+// 		capacitor_voltage
+// 	) VALUES (? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?);`
+// 	db.ExecContext(ctx, stmt,
+// 		time.Now().Unix(),
+// 		d.OutdoorHumidity,
+// 		d.OutdoorTemperature,
+// 		d.IndoorHumidity,
+// 		d.IndoorTemperature,
+// 		d.SolarIrradiance,
+// 		int64(d.UVI),
+// 		d.RainfallDaily,
+// 		d.RainfallEvent,
+// 		d.RainfallHourly,
+// 		d.RainfallMonthly,
+// 		d.RainfallRate,
+// 		int64(d.RainfallState),
+// 		d.RainfallWeekly,
+// 		d.RainfallYearly,
+// 		d.WindDirection,
+// 		d.WindGust,
+// 		d.WindSpeed,
+// 		d.WindMaxDailyGust,
+// 		d.PressureAbsolute,
+// 		d.PressureRelative,
+// 		d.BatteryVoltage,
+// 		d.CapacitorVoltage,
+// 	)
+// 	return nil
+// }
 
 type FormData struct {
 	PassKey            string  `json:"pass_key"`
@@ -332,20 +448,29 @@ func NotFoundHandler(w http.ResponseWriter, r *http.Request) {
 
 // TODO: use [http.MaxBytesReader]
 func Routes() *http.ServeMux {
+	log := zap.L().Named("http")
 	mux := http.NewServeMux()
-	// WARN: need to handle this
-	mux.Handle("POST /data/report/{$}", Handler(HandleEcowittPost))
-	mux.Handle("/", http.HandlerFunc(NotFoundHandler))
-	// mux.Handle("/metrics", promhttp.Handler())
+	handle := func(pattern string, handler http.Handler) {
+		log = log.With(zap.String("pattern", pattern))
+		mux.Handle(pattern, logging.NewMiddleware(log, handler))
+	}
+	handle("POST /data/report/{$}", Handler(HandleEcowittPost))
+	// mux.Handle("POST /data/report/{$}", logging.NewMiddleware(log, Handler(HandleEcowittPost)))
+	handle("/", http.HandlerFunc(NotFoundHandler))
+	// mux.Handle("/", logging.NewMiddleware(log, http.HandlerFunc(NotFoundHandler)))
+	// mux.Handle("/", logging.NewMiddleware(log, http.HandlerFunc(NotFoundHandler)))
 	opts := promhttp.HandlerOpts{
-		ErrorLog:         zap.NewStdLog(zap.L().Named("http.prom")),
+		ErrorLog:         zap.NewStdLog(log.Named("prom")),
 		ErrorHandling:    promhttp.HTTPErrorOnError,
 		Timeout:          30 * time.Second,
 		ProcessStartTime: time.Now(),
 	}
-	mux.Handle("/metrics", promhttp.InstrumentMetricHandler(
+	handle("/metrics", promhttp.InstrumentMetricHandler(
 		prometheus.DefaultRegisterer, promhttp.HandlerFor(prometheus.DefaultGatherer, opts),
 	))
+	// mux.Handle("/metrics", promhttp.InstrumentMetricHandler(
+	// 	prometheus.DefaultRegisterer, promhttp.HandlerFor(prometheus.DefaultGatherer, opts),
+	// ))
 	return mux
 }
 
@@ -359,7 +484,8 @@ func NewServer(ctx context.Context, addr string, handler http.Handler) *http.Ser
 		ErrorLog: zap.NewStdLog(zap.L().Named("http.server").WithOptions(
 			zap.AddStacktrace(zap.FatalLevel),
 		)),
-		BaseContext: func(net.Listener) context.Context {
+		BaseContext: func(l net.Listener) context.Context {
+			fmt.Println("BaseContext:", l)
 			return ctx
 		},
 	}
@@ -425,10 +551,31 @@ func HandleEcowittPost(w http.ResponseWriter, r *http.Request) error {
 	if err := UpdateMetrics(d); err != nil {
 		return NewHTTPError(http.StatusInternalServerError, err)
 	}
+	if globalConn != nil {
+		if err := InsertRow(r.Context(), globalConn, d); err != nil {
+			log.Error("insert", zap.Error(err))
+			return err
+		}
+	}
 	return nil
 }
 
+var globalConn *pgx.Conn
+
 func realMain(log *zap.Logger) error {
+	// if _, err := conn.Exec(ctx, createTableStmt); err != nil {
+	envOr := func(key, def string) string {
+		if s := os.Getenv(key); s != "" {
+			return s
+		}
+		return def
+	}
+	addr := pflag.String("addr", envOr("ECOWITT_ADDR", ":3002"), "HTTP servder address.")
+	dbUser := pflag.String("db-user", envOr("ECOWITT_DB_USER", "REPLACE_ME"), "Postgres user.")
+	dbPass := pflag.String("db-password", envOr("ECOWITT_DB_PASSWORD", "REPLACE_ME"), "Postgres password.")
+	dbName := pflag.String("db-name", envOr("ECOWITT_DB_NAME", "weather"), "Postgres database.")
+	pflag.Parse()
+
 	var signaled atomic.Bool
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGSTOP)
 	go func() {
@@ -438,7 +585,30 @@ func realMain(log *zap.Logger) error {
 		cancel()
 	}()
 
-	srv := NewServer(ctx, ":8080", Routes())
+	conn, err := pgx.Connect(ctx, fmt.Sprintf("postgres://%s:%s@localhost:5432/%s",
+		*dbUser, *dbPass, *dbName))
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+
+	ping := func(parent context.Context) error {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+		defer cancel()
+		return conn.Ping(ctx)
+	}
+	if err := ping(ctx); err != nil {
+		log.Error("ping failed", zap.Error(err))
+		return err
+	}
+	globalConn = conn
+
+	if _, err := conn.Exec(ctx, createTableStmt); err != nil {
+		log.Error("failed to created tables", zap.Error(err))
+		return err
+	}
+
+	srv := NewServer(ctx, *addr, Routes())
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -464,22 +634,6 @@ func main() {
 	if err := realMain(log); err != nil {
 		log.Fatal("server exited with error", zap.Error(err))
 	}
-}
-
-func PrintJSON(v interface{}) error {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "    ")
-	return enc.Encode(v)
-}
-
-type LoggingMiddleWare struct {
-	rr   rand.Rand
-	base *zap.Logger
-	next http.Handler
-}
-
-func (h *LoggingMiddleWare) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), "key", " ")))
 }
 
 /*
