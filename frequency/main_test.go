@@ -7,10 +7,9 @@ import (
 	"encoding/gob"
 	"io"
 	"os"
+	"slices"
 	"sync"
 	"testing"
-
-	"golang.org/x/exp/slices"
 )
 
 const (

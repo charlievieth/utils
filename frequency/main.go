@@ -9,11 +9,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"text/tabwriter"
 
 	"github.com/charlievieth/num"
-	"golang.org/x/exp/slices"
 )
 
 func init() {

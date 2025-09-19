@@ -1,4 +1,4 @@
 github.com/charlievieth/num v0.0.0-20211011220440-458eb276ef61 h1:Ub2w72wRBdSCyBJ9Ag4Ob5eR5jM28Z4uPrw/2eNTUX8=
 github.com/charlievieth/num v0.0.0-20211011220440-458eb276ef61/go.mod h1:/U5vOa/7xt7tVVy+7jKsm2BtyQkavBoycSjwyoU90js=
-golang.org/x/exp v0.0.0-20230905200255-921286631fa9 h1:GoHiUyI/Tp2nVkLI2mCxVkOjsbSXD66ic0XW0js0R9g=
-golang.org/x/exp v0.0.0-20230905200255-921286631fa9/go.mod h1:S2oDrQGGwySpoQPVqRShND87VCbxmc6bL1Yd2oYrm6k=
+github.com/charlievieth/num v0.0.0-20240612013333-de9097d9ef7f h1:aJl96o9Kc2FF7rU0oCy29Eqeje7Yc44W1atRdUbAAn0=
+github.com/charlievieth/num v0.0.0-20240612013333-de9097d9ef7f/go.mod h1:/U5vOa/7xt7tVVy+7jKsm2BtyQkavBoycSjwyoU90js=
