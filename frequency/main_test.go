@@ -81,7 +81,7 @@ func testReadline(t *testing.T, dataFile, expFile string) {
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	lines, err := ReadLines(&r, '\n', false, false)
+	lines, err := ReadLines(&r, '\n', false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func benchmarkReadLines(b *testing.B, name string, ignoreCase bool) {
 		b:   bufio.NewReader(rd),
 		buf: make([]byte, 128),
 	}
-	if _, err := ReadLines(&r, '\n', ignoreCase, false); err != nil {
+	if _, err := ReadLines(&r, '\n', ignoreCase, false, false); err != nil {
 		b.Fatal(err)
 	}
 	b.SetBytes(int64(len(data)))
@@ -113,7 +113,7 @@ func benchmarkReadLines(b *testing.B, name string, ignoreCase bool) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		rd.Seek(0, 0)
-		if _, err := ReadLines(&r, '\n', ignoreCase, false); err != nil {
+		if _, err := ReadLines(&r, '\n', ignoreCase, false, false); err != nil {
 			b.Fatal(err)
 		}
 	}

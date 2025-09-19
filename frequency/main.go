@@ -55,7 +55,7 @@ type Line struct {
 }
 
 // TODO: remove ignore case option
-func ReadLines(r *Reader, delim byte, ignoreCase, reverseOrder bool) ([]Line, error) {
+func ReadLines(r *Reader, delim byte, ignoreCase, reverseOrder, trimSpace bool) ([]Line, error) {
 	m := make(map[string]*int, 128)
 
 	var err error
@@ -65,6 +65,9 @@ func ReadLines(r *Reader, delim byte, ignoreCase, reverseOrder bool) ([]Line, er
 		if len(b) != 0 {
 			if ignoreCase {
 				b = bytes.ToLower(b)
+			}
+			if trimSpace {
+				b = bytes.TrimSpace(b)
 			}
 			p := m[string(b)]
 			if p == nil {
@@ -132,6 +135,7 @@ func main() {
 	reverseOrder := flag.Bool("r", false, "reverse frequency sort order")
 	printThousandsSep := flag.Bool("n", false, "print numbers with thousands separators")
 	caseInsensitive := flag.Bool("i", false, "sort names case-insensitively")
+	trimSpace := flag.Bool("s", false, "trim leading/trailing whitespace")
 	flag.Parse()
 
 	r := Reader{
@@ -142,7 +146,7 @@ func main() {
 	if *nullTerminate {
 		delim = 0
 	}
-	lines, err := ReadLines(&r, delim, *caseInsensitive, *reverseOrder)
+	lines, err := ReadLines(&r, delim, *caseInsensitive, *reverseOrder, *trimSpace)
 	if err != nil {
 		log.Fatalln(err)
 	}
