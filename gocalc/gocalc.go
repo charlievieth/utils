@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -228,14 +229,8 @@ func uniqueFloats(ff []float64) []float64 {
 	if len(ff) <= 1 {
 		return ff
 	}
-	sort.Float64s(ff)
-	a := ff[:1]
-	for i := 1; i < len(ff); i++ {
-		if ff[i] != ff[i-1] {
-			a = append(a, ff[i])
-		}
-	}
-	return a
+	slices.Sort(ff)
+	return slices.Compact(ff)
 }
 
 type Config struct {
@@ -305,7 +300,7 @@ func (c *Config) Process(rd io.Reader) (*Result, error) {
 	parseErrors := 0
 	needAll := c.Median || len(c.GetPercentiles()) != 0
 
-	r := bufio.NewReaderSize(rd, 96*1024)
+	r := bufio.NewReaderSize(rd, 256*1024)
 	var err error
 	for {
 		s, e := r.ReadString('\n')
@@ -340,15 +335,15 @@ func (c *Config) Process(rd io.Reader) (*Result, error) {
 	return &Result{Count: count, Sum: sum, All: all}, nil
 }
 
-func openFile(name string) (*os.File, func() error, error) {
+func openFile(name string) (*os.File, error) {
 	if name == "-" {
-		return os.Stdin, func() error { return nil }, nil
+		return os.Stdin, nil
 	}
 	f, err := os.Open(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return f, f.Close, nil
+	return f, nil
 }
 
 func generateShellCompletion(cmd *cobra.Command, shell string) error {
@@ -408,15 +403,15 @@ $ gocalc --completion [bash|zsh|fish|powershell]`[1:],
 		var count int64
 		sum := new(big.Float).SetPrec(Precision)
 		if len(args) == 0 {
-			args = append(args, "-")
+			args = []string{"-"}
 		}
 		for _, name := range args {
-			f, close, err := openFile(name)
+			f, err := openFile(name)
 			if err != nil {
 				return err
 			}
 			r, err := conf.Process(f)
-			close()
+			f.Close()
 			if err != nil {
 				return err
 			}
