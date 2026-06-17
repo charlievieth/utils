@@ -99,11 +99,7 @@ func tryModule(wd string) (string, error) {
 	return filepath.ToSlash(pkgPath + "/" + rel), nil
 }
 
-func realMain() (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
+func gowdForDir(dir string) (string, error) {
 	fns := []func(string) (string, error){
 		tryModule,
 		tryGoBuild,
@@ -112,8 +108,7 @@ func realMain() (string, error) {
 	}
 	var first error
 	for _, fn := range fns {
-		// path, err := fn(".")
-		path, err := fn(wd)
+		path, err := fn(dir)
 		if err == nil {
 			return path, nil
 		}
@@ -124,18 +119,57 @@ func realMain() (string, error) {
 	return "", first
 }
 
+func realMain() error {
+	var dirs []string
+	for _, arg := range flag.Args() {
+		fi, err := os.Stat(arg)
+		if err != nil {
+			continue
+		}
+		if fi.Mode().IsRegular() {
+			arg = filepath.Dir(arg)
+		}
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			continue
+		}
+		dirs = append(dirs, abs)
+	}
+	if len(dirs) == 0 {
+		wd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		dirs = append(dirs, wd)
+	}
+	var first error
+	for _, dir := range dirs {
+		gp, err := gowdForDir(dir)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		// Immediately return print errors since it means we cannot continue.
+		if _, err := fmt.Println(gp); err != nil {
+			return err
+		}
+	}
+	return first
+}
+
 func main() {
 	flag.Usage = func() {
-		const msg = "gowd: print the import path of the Go package in the current directory.\n"
+		const msg = "gowd: [PATH...]\n" +
+			"print the import path of the Go package corresponding to PATH(s) or the current directory\n"
 		fmt.Fprint(flag.CommandLine.Output(), msg)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
-	gowd, err := realMain()
-	if err != nil {
+	if err := realMain(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
-	fmt.Println(gowd)
 }
