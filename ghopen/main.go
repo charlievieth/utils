@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	urlpkg "net/url"
@@ -12,46 +13,30 @@ import (
 	"strings"
 )
 
-func GitBranch(wd string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+func Git(wd string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
 	cmd.Dir = wd
 	b, err := cmd.CombinedOutput()
 	out := string(bytes.TrimSpace(b))
 	if err != nil {
 		if out == "" {
-			out = "no branch found"
+			out = "<no output>"
 		}
-		return "", fmt.Errorf("git sha: %s: %s", err, out)
+		return "", fmt.Errorf("git %s: %s: %s", strings.Join(args, " "), err, out)
 	}
 	return out, nil
+}
+
+func GitBranch(wd string) (string, error) {
+	return Git(wd, "rev-parse", "--abbrev-ref", "HEAD")
 }
 
 func GitSHA(wd string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = wd
-	b, err := cmd.CombinedOutput()
-	out := string(bytes.TrimSpace(b))
-	if err != nil {
-		if out == "" {
-			out = "no SHA found"
-		}
-		return "", fmt.Errorf("git sha: %s: %s", err, out)
-	}
-	return out, nil
+	return Git(wd, "rev-parse", "HEAD")
 }
 
 func GitConfig(wd, config string) (string, error) {
-	cmd := exec.Command("git", "config", "--get", config)
-	cmd.Dir = wd
-	b, err := cmd.CombinedOutput()
-	out := string(bytes.TrimSpace(b))
-	if err != nil {
-		if out == "" {
-			out = "config not found"
-		}
-		return "", fmt.Errorf("git config --get %q: %s: %s", config, err, out)
-	}
-	return out, nil
+	return Git(wd, "config", "--get", config)
 }
 
 func GitRemote(wd, branch string) (string, error) {
@@ -133,6 +118,28 @@ type FileArgument struct {
 	Info os.FileInfo
 }
 
+// defaultBranch attempts to find the default Git branch for working
+// directory wd (which will likely be "master" or "main").
+func defaultBranch(wd string) (string, error) {
+	if out, err := Git(wd, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
+		if remote, ok := strings.CutPrefix(out, "refs/remotes/origin/"); ok {
+			return remote, nil
+		}
+	}
+	// Fallback: check if either "master" or "main" exist.
+	var errs []error
+	for _, branch := range []string{"master", "main"} {
+		br, err := GitRemote(wd, branch)
+		if err == nil {
+			return br, nil
+		}
+		errs = append(errs, err)
+	}
+	// TODO(charlie): Use `git ls-remote --symref <repository-url> HEAD`
+	// to figure out the default branch, but IIRC this is slow.
+	return "", errors.Join(errs...)
+}
+
 func realMain() error {
 	args := flag.Args()
 	if len(args) == 0 {
@@ -166,7 +173,10 @@ func realMain() error {
 		}
 		var branch string
 		if *forceMaster {
-			branch = "master"
+			branch, err = defaultBranch(wd)
+			if err != nil {
+				return err
+			}
 		} else {
 			branch, _ = GitBranch(wd)
 		}
