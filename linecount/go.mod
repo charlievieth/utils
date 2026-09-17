@@ -3,12 +3,12 @@ module github.com/charlievieth/utils/linecount
 go 1.23
 
 require (
-	github.com/charlievieth/fastwalk v1.0.12
-	github.com/charlievieth/num v0.0.0-20211011220440-458eb276ef61
-	github.com/spf13/cobra v1.9.1
+	github.com/charlievieth/fastwalk v1.0.14
+	github.com/charlievieth/num v0.0.0-20240612013333-de9097d9ef7f
+	github.com/spf13/cobra v1.10.2
 )
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 )
