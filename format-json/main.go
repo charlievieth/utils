@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 )
 
-func formatFile(name, indent string, sortKeys bool, buf *bytes.Buffer) error {
+func formatFile(name, indent string, sortKeys, compact bool, buf *bytes.Buffer) error {
 	f, err := os.Open(name)
 	if err != nil {
 		return err
@@ -48,7 +48,12 @@ func formatFile(name, indent string, sortKeys bool, buf *bytes.Buffer) error {
 				}
 				break // ok
 			}
-			data, err := json.MarshalIndent(v, "", indent)
+			var data []byte
+			if compact {
+				data, err = json.Marshal(v)
+			} else {
+				data, err = json.MarshalIndent(v, "", indent)
+			}
 			if err != nil {
 				break
 			}
@@ -63,7 +68,12 @@ func formatFile(name, indent string, sortKeys bool, buf *bytes.Buffer) error {
 				break // ok
 			}
 			buf.Reset()
-			if err = json.Indent(buf, m, "", indent); err != nil {
+			if compact {
+				err = json.Compact(buf, []byte(m))
+			} else {
+				err = json.Indent(buf, m, "", indent)
+			}
+			if err != nil {
 				break
 			}
 		}
@@ -91,7 +101,7 @@ func formatFile(name, indent string, sortKeys bool, buf *bytes.Buffer) error {
 	return nil
 }
 
-func formatFiles(names []string, indent string, sortKeys bool) error {
+func formatFiles(names []string, indent string, sortKeys, compact bool) error {
 	numCPU := runtime.NumCPU()
 	if n := len(names); n < numCPU {
 		numCPU = n
@@ -106,7 +116,7 @@ func formatFiles(names []string, indent string, sortKeys bool) error {
 			defer wg.Done()
 			var buf bytes.Buffer
 			for name := range in {
-				if err := formatFile(name, indent, sortKeys, &buf); err != nil {
+				if err := formatFile(name, indent, sortKeys, compact, &buf); err != nil {
 					fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
 					atomic.AddInt64(errCount, 1)
 				}
@@ -147,16 +157,11 @@ func parseFlags() {
 
 func main() {
 	parseFlags()
-	var delim string
-	switch {
-	case UseTabs:
-		delim = "\t"
-	case Compact:
-		delim = ""
-	default:
+	delim := "\t"
+	if !UseTabs {
 		delim = strings.Repeat(" ", int(Indent))
 	}
-	if err := formatFiles(flag.Args(), delim, SortKeys); err != nil {
+	if err := formatFiles(flag.Args(), delim, SortKeys, Compact); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
